@@ -16,7 +16,7 @@
  */
 package org.apache.lucene.search;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.Matchers.instanceOf;
 
 import com.carrotsearch.randomizedtesting.generators.RandomNumbers;
 import java.io.IOException;
@@ -24,12 +24,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
-import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.DirectoryReader;
@@ -37,6 +36,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.tests.util.LuceneTestCase;
+import org.hamcrest.MatcherAssert;
 
 public class TestCollectorManager extends LuceneTestCase {
 
@@ -57,13 +57,13 @@ public class TestCollectorManager extends LuceneTestCase {
 
     for (int iter = 0; iter < 100; iter++) {
       int docs = RandomNumbers.randomIntBetween(random(), 1000, 10000);
-      List<Integer> expected = generateDocIds(docs, random());
+      Collection<Integer> expected = generateDocIds(docs, random());
       IntStream expectedEven = expected.stream().filter(evenPredicate).mapToInt(i -> i);
       IntStream expectedOdd = expected.stream().filter(oddPredicate).mapToInt(i -> i);
 
       // Test only wrapping one of the collector managers:
       Object result = collectAll(ctx, expected, cm);
-      assertThat(result, instanceOf(List.class));
+      MatcherAssert.assertThat(result, instanceOf(List.class));
       IntStream intResults = ((List<Integer>) result).stream().mapToInt(i -> i);
       assertArrayEquals(
           IntStream.concat(expectedEven, expectedOdd).sorted().toArray(),
@@ -91,7 +91,7 @@ public class TestCollectorManager extends LuceneTestCase {
   }
 
   private static <C extends Collector> Object collectAll(
-      LeafReaderContext ctx, List<Integer> values, CollectorManager<C, ?> collectorManager)
+      LeafReaderContext ctx, Collection<Integer> values, CollectorManager<C, ?> collectorManager)
       throws IOException {
     List<C> collectors = new ArrayList<>();
     C collector = collectorManager.newCollector();
@@ -109,27 +109,21 @@ public class TestCollectorManager extends LuceneTestCase {
   }
 
   /**
-   * Generate test doc ids. This will de-dupe and create a sorted list to be more realistic with
-   * real-world use-cases. Note that it's possible this will generate fewer than 'count' entries
-   * because of de-duping, but that should be quite rare and probably isn't worth worrying about for
-   * these testing purposes.
+   * Generate test doc ids. This will de-dupe and create a sorted collection to be more realistic
+   * with real-world use-cases. Note that it's possible this will generate fewer than 'count'
+   * entries because of de-duping, but that should be quite rare and probably isn't worth worrying
+   * about for these testing purposes.
    */
-  private List<Integer> generateDocIds(int count, Random random) {
-    Set<Integer> generated = new HashSet<>(count);
+  private static SortedSet<Integer> generateDocIds(int count, Random random) {
+    SortedSet<Integer> generated = new TreeSet<>();
     for (int i = 0; i < count; i++) {
       generated.add(random.nextInt());
     }
-
-    return generated.stream().sorted().collect(Collectors.toList());
+    return generated;
   }
 
-  private static final class CompositeCollectorManager
+  private record CompositeCollectorManager(List<Predicate<Integer>> predicates)
       implements CollectorManager<Collector, List<Integer>> {
-    private final List<Predicate<Integer>> predicates;
-
-    CompositeCollectorManager(List<Predicate<Integer>> predicates) {
-      this.predicates = predicates;
-    }
 
     @Override
     public Collector newCollector() throws IOException {

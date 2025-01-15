@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
@@ -34,11 +35,11 @@ import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.facet.FacetsConfig;
 import org.apache.lucene.facet.taxonomy.FacetLabel;
+import org.apache.lucene.facet.taxonomy.ParallelTaxonomyArrays;
 import org.apache.lucene.facet.taxonomy.TaxonomyReader;
 import org.apache.lucene.facet.taxonomy.TaxonomyWriter;
 import org.apache.lucene.facet.taxonomy.writercache.LruTaxonomyWriterCache;
 import org.apache.lucene.facet.taxonomy.writercache.TaxonomyWriterCache;
-import org.apache.lucene.facet.taxonomy.writercache.UTF8TaxonomyWriterCache;
 import org.apache.lucene.index.CorruptIndexException; // javadocs
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
@@ -85,6 +86,8 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
    */
   public static final String INDEX_EPOCH = "index.epoch";
 
+  private static final int DEFAULT_CACHE_SIZE = 4000;
+
   private final Directory dir;
   private final IndexWriter indexWriter;
   private final TaxonomyWriterCache cache;
@@ -128,9 +131,8 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
    *     APPEND_OR_CREATE</code> appends to an existing index if there is one, otherwise it creates
    *     a new index.
    * @param cache A {@link TaxonomyWriterCache} implementation which determines the in-memory
-   *     caching policy. See for example {@link LruTaxonomyWriterCache} and {@link
-   *     UTF8TaxonomyWriterCache}. If null or missing, {@link #defaultTaxonomyWriterCache()} is
-   *     used.
+   *     caching policy. See for example {@link LruTaxonomyWriterCache}. If null or missing, {@link
+   *     #defaultTaxonomyWriterCache()} is used.
    * @throws CorruptIndexException if the taxonomy is corrupted.
    * @throws LockObtainFailedException if the taxonomy is locked by another writer.
    * @throws IOException if another error occurred.
@@ -267,11 +269,10 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
    * Defines the default {@link TaxonomyWriterCache} to use in constructors which do not specify
    * one.
    *
-   * <p>The current default is {@link UTF8TaxonomyWriterCache}, i.e., the entire taxonomy is cached
-   * in memory while building it.
+   * <p>The current default is {@link LruTaxonomyWriterCache}
    */
   public static TaxonomyWriterCache defaultTaxonomyWriterCache() {
-    return new UTF8TaxonomyWriterCache();
+    return new LruTaxonomyWriterCache(DEFAULT_CACHE_SIZE);
   }
 
   /** Create this with {@code OpenMode.CREATE_OR_APPEND}. */
@@ -437,6 +438,14 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
   }
 
   /**
+   * Child classes can implement this method to modify the document corresponding to a category path
+   * before indexing it.
+   *
+   * @lucene.experimental
+   */
+  protected void enrichOrdinalDocument(Document d, FacetLabel categoryPath) {}
+
+  /**
    * Note that the methods calling addCategoryDocument() are synchronized, so this method is
    * effectively synchronized as well.
    */
@@ -452,6 +461,9 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     d.add(new BinaryDocValuesField(Consts.FULL, new BytesRef(fieldPath)));
 
     d.add(fullPathField);
+
+    // add arbitrary ordinal data to the doc
+    enrichOrdinalDocument(d, categoryPath);
 
     indexWriter.addDocument(d);
     int id = nextID.getAndIncrement();
@@ -679,10 +691,10 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     // was allocated bigger than it really needs to be.
     Objects.checkIndex(ordinal, nextID.get());
 
-    int[] parents = getTaxoArrays().parents();
-    assert ordinal < parents.length
-        : "requested ordinal (" + ordinal + "); parents.length (" + parents.length + ") !";
-    return parents[ordinal];
+    ParallelTaxonomyArrays.IntArray parents = getTaxoArrays().parents();
+    assert ordinal < parents.length()
+        : "requested ordinal (" + ordinal + "); parents.length (" + parents.length() + ") !";
+    return parents.get(ordinal);
   }
 
   /**
@@ -865,6 +877,34 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     initReaderManager(); // ensure that it's initialized
     refreshReaderManager();
     nextID.set(indexWriter.getDocStats().maxDoc);
+    taxoArrays = null; // must nullify so that it's re-computed next time it's needed
+
+    // need to clear the cache, so that addCategory won't accidentally return
+    // old categories that are in the cache.
+    cache.clear();
+    cacheIsComplete = false;
+    shouldFillCache = true;
+    cacheMisses.set(0);
+
+    // update indexEpoch as a taxonomy replace is just like it has be recreated
+    ++indexEpoch;
+  }
+
+  /**
+   * Delete the taxonomy and reset all state for this writer.
+   *
+   * <p>To keep using the same main index, you would have to regenerate the taxonomy, taking care
+   * that ordinals are indexed in the same order as before. An example of this can be found in
+   * {@link ReindexingEnrichedDirectoryTaxonomyWriter#reindexWithNewOrdinalData(BiConsumer)}.
+   *
+   * @lucene.experimental
+   */
+  synchronized void deleteAll() throws IOException {
+    indexWriter.deleteAll();
+    shouldRefreshReaderManager = true;
+    initReaderManager(); // ensure that it's initialized
+    refreshReaderManager();
+    nextID.set(0);
     taxoArrays = null; // must nullify so that it's re-computed next time it's needed
 
     // need to clear the cache, so that addCategory won't accidentally return

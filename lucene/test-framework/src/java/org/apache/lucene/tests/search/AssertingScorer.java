@@ -24,6 +24,7 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.TwoPhaseIterator;
+import org.apache.lucene.util.FixedBitSet;
 
 /** Wraps a Scorer with additional checks */
 public class AssertingScorer extends Scorer {
@@ -35,28 +36,31 @@ public class AssertingScorer extends Scorer {
     FINISHED
   };
 
-  public static Scorer wrap(Random random, Scorer other, ScoreMode scoreMode) {
+  public static Scorer wrap(
+      Random random, Scorer other, ScoreMode scoreMode, boolean canCallMinCompetitiveScore) {
     if (other == null) {
       return null;
     }
-    return new AssertingScorer(random, other, scoreMode);
+    return new AssertingScorer(random, other, scoreMode, canCallMinCompetitiveScore);
   }
 
   final Random random;
   final Scorer in;
   final ScoreMode scoreMode;
+  final boolean canCallMinCompetitiveScore;
 
   IteratorState state = IteratorState.ITERATING;
   int doc;
   float minCompetitiveScore = 0;
   int lastShallowTarget = -1;
 
-  private AssertingScorer(Random random, Scorer in, ScoreMode scoreMode) {
-    super(in.getWeight());
+  private AssertingScorer(
+      Random random, Scorer in, ScoreMode scoreMode, boolean canCallMinCompetitiveScore) {
     this.random = random;
     this.in = in;
     this.scoreMode = scoreMode;
     this.doc = in.docID();
+    this.canCallMinCompetitiveScore = canCallMinCompetitiveScore;
   }
 
   public Scorer getIn() {
@@ -77,6 +81,7 @@ public class AssertingScorer extends Scorer {
   @Override
   public void setMinCompetitiveScore(float score) throws IOException {
     assert scoreMode == ScoreMode.TOP_SCORES;
+    assert canCallMinCompetitiveScore;
     assert Float.isNaN(score) == false;
     assert score >= minCompetitiveScore;
     in.setMinCompetitiveScore(score);
@@ -179,7 +184,7 @@ public class AssertingScorer extends Scorer {
         } else {
           state = IteratorState.ITERATING;
         }
-        assert in.docID() == advanced;
+        assert in.docID() == advanced : in.docID() + " != " + advanced + " in " + in;
         assert AssertingScorer.this.in.docID() == in.docID();
         return doc = advanced;
       }
@@ -187,6 +192,14 @@ public class AssertingScorer extends Scorer {
       @Override
       public long cost() {
         return in.cost();
+      }
+
+      @Override
+      public void intoBitSet(int upTo, FixedBitSet bitSet, int offset) throws IOException {
+        assert docID() != -1;
+        assert offset <= docID();
+        in.intoBitSet(upTo, bitSet, offset);
+        assert docID() >= upTo;
       }
     };
   }

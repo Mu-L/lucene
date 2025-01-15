@@ -87,10 +87,11 @@ public class TestReadOnlyIndex extends LuceneTestCase {
     assertEquals(1, isearcher.count(new TermQuery(new Term("fieldname", longTerm))));
     Query query = new TermQuery(new Term("fieldname", "text"));
     TopDocs hits = isearcher.search(query, 1);
-    assertEquals(1, hits.totalHits.value);
+    assertEquals(1, hits.totalHits.value());
     // Iterate through the results:
+    StoredFields storedFields = isearcher.storedFields();
     for (int i = 0; i < hits.scoreDocs.length; i++) {
-      Document hitDoc = isearcher.doc(hits.scoreDocs[i].doc);
+      Document hitDoc = storedFields.document(hits.scoreDocs[i].doc);
       assertEquals(text, hitDoc.get("fieldname"));
     }
 

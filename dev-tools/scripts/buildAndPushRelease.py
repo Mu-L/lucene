@@ -91,7 +91,7 @@ def getGitRev():
   return os.popen('git rev-parse HEAD').read().strip()
 
 
-def prepare(root, version, gpg_key_id, gpg_password, gpg_home=None, sign_gradle=False):
+def prepare(root, version, pause_before_sign, gpg_key_id, gpg_password, gpg_home=None, sign_gradle=False):
   print()
   print('Prepare release...')
   if os.path.exists(LOG):
@@ -112,13 +112,18 @@ def prepare(root, version, gpg_key_id, gpg_password, gpg_home=None, sign_gradle=
   checkDOAPfiles(version)
 
   if not dev_mode:
-    print('  ./gradlew --no-daemon clean check')
-    run('./gradlew --no-daemon clean check')
+    print('  ./gradlew --stacktrace --no-daemon clean')
+    run('./gradlew --stacktrace --no-daemon clean')
+    print('  ./gradlew --stacktrace --no-daemon check')
+    run('./gradlew --stacktrace --no-daemon check')
   else:
     print('  skipping precommit check due to dev-mode')
 
+  if pause_before_sign:
+    input("Tests complete! Please press ENTER to proceed to assembleRelease: ")
+
   print('  prepare-release')
-  cmd = './gradlew --no-daemon assembleRelease' \
+  cmd = './gradlew --stacktrace --no-daemon assembleRelease' \
         ' -Dversion.release=%s' % version
   if dev_mode:
     cmd += ' -Pvalidation.git.failOnModified=false'
@@ -247,6 +252,8 @@ def parse_config():
                       help='Uses local KEYS file to validate presence of RM\'s gpg key')
   parser.add_argument('--push-local', metavar='PATH',
                       help='Push the release to the local path')
+  parser.add_argument('--pause-before-sign', default=False, action='store_true',
+                      help='Pause for user confirmation before the assembleRelease step (to prevent timeout on gpg pinentry')
   parser.add_argument('--sign', metavar='KEYID',
                       help='Sign the release with the given gpg key')
   parser.add_argument('--sign-method-gradle', dest='sign_method_gradle', default=False, action='store_true',
@@ -389,7 +396,7 @@ def main():
     c.key_password = None
 
   if c.prepare:
-    prepare(c.root, c.version, c.key_id, c.key_password, gpg_home=gpg_home, sign_gradle=c.sign_method_gradle)
+    prepare(c.root, c.version, c.pause_before_sign, c.key_id, c.key_password, gpg_home=gpg_home, sign_gradle=c.sign_method_gradle)
   else:
     os.chdir(c.root)
 

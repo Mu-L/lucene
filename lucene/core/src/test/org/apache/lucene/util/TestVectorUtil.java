@@ -17,6 +17,7 @@
 package org.apache.lucene.util;
 
 import java.util.Random;
+import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.tests.util.TestUtil;
 
@@ -115,6 +116,19 @@ public class TestVectorUtil extends LuceneTestCase {
     expectThrows(IllegalArgumentException.class, () -> VectorUtil.l2normalize(v));
   }
 
+  public void testExtremeNumerics() {
+    float[] v1 = new float[1536];
+    float[] v2 = new float[1536];
+    for (int i = 0; i < 1536; i++) {
+      v1[i] = 0.888888f;
+      v2[i] = -0.777777f;
+    }
+    for (VectorSimilarityFunction vectorSimilarityFunction : VectorSimilarityFunction.values()) {
+      float v = vectorSimilarityFunction.compare(v1, v2);
+      assertTrue(vectorSimilarityFunction + " expected >=0 got:" + v, v >= 0);
+    }
+  }
+
   private static float l2(float[] v) {
     float l2 = 0;
     for (float x : v) {
@@ -131,19 +145,19 @@ public class TestVectorUtil extends LuceneTestCase {
     return u;
   }
 
-  private static BytesRef negative(BytesRef v) {
-    BytesRef u = new BytesRef(new byte[v.length]);
+  private static byte[] negative(byte[] v) {
+    byte[] u = new byte[v.length];
     for (int i = 0; i < v.length; i++) {
       // what is (byte) -(-128)? 127?
-      u.bytes[i] = (byte) -v.bytes[i];
+      u[i] = (byte) -v[i];
     }
     return u;
   }
 
-  private static float l2(BytesRef v) {
+  private static float l2(byte[] v) {
     float l2 = 0;
-    for (int i = v.offset; i < v.offset + v.length; i++) {
-      l2 += v.bytes[i] * v.bytes[i];
+    for (int i = 0; i < v.length; i++) {
+      l2 += v[i] * v[i];
     }
     return l2;
   }
@@ -161,7 +175,7 @@ public class TestVectorUtil extends LuceneTestCase {
     return v;
   }
 
-  private static BytesRef randomVectorBytes() {
+  private static byte[] randomVectorBytes() {
     BytesRef v = TestUtil.randomBinaryTerm(random(), TestUtil.nextInt(random(), 1, 100));
     // clip at -127 to avoid overflow
     for (int i = v.offset; i < v.offset + v.length; i++) {
@@ -169,22 +183,34 @@ public class TestVectorUtil extends LuceneTestCase {
         v.bytes[i] = -127;
       }
     }
-    return v;
+    assert v.offset == 0;
+    return v.bytes;
+  }
+
+  public static byte[] randomVectorBytes(int dim) {
+    BytesRef v = TestUtil.randomBinaryTerm(random(), dim);
+    // clip at -127 to avoid overflow
+    for (int i = v.offset; i < v.offset + v.length; i++) {
+      if (v.bytes[i] == -128) {
+        v.bytes[i] = -127;
+      }
+    }
+    return v.bytes;
   }
 
   public void testBasicDotProductBytes() {
-    BytesRef a = new BytesRef(new byte[] {1, 2, 3});
-    BytesRef b = new BytesRef(new byte[] {-10, 0, 5});
+    byte[] a = new byte[] {1, 2, 3};
+    byte[] b = new byte[] {-10, 0, 5};
     assertEquals(5, VectorUtil.dotProduct(a, b), 0);
     float denom = a.length * (1 << 15);
     assertEquals(0.5 + 5 / denom, VectorUtil.dotProductScore(a, b), DELTA);
 
     // dot product 0 maps to dotProductScore 0.5
-    BytesRef zero = new BytesRef(new byte[] {0, 0, 0});
+    byte[] zero = new byte[] {0, 0, 0};
     assertEquals(0.5, VectorUtil.dotProductScore(a, zero), DELTA);
 
-    BytesRef min = new BytesRef(new byte[] {-128, -128});
-    BytesRef max = new BytesRef(new byte[] {127, 127});
+    byte[] min = new byte[] {-128, -128};
+    byte[] max = new byte[] {127, 127};
     // minimum dot product score is not quite zero because 127 < 128
     assertEquals(0.0039, VectorUtil.dotProductScore(min, max), DELTA);
 
@@ -194,55 +220,48 @@ public class TestVectorUtil extends LuceneTestCase {
 
   public void testSelfDotProductBytes() {
     // the dot product of a vector with itself is equal to the sum of the squares of its components
-    BytesRef v = randomVectorBytes();
+    byte[] v = randomVectorBytes();
     assertEquals(l2(v), VectorUtil.dotProduct(v, v), DELTA);
   }
 
   public void testOrthogonalDotProductBytes() {
     // the dot product of two perpendicular vectors is 0
-    byte[] v = new byte[4];
-    v[0] = (byte) random().nextInt(100);
-    v[1] = (byte) random().nextInt(100);
-    v[2] = v[1];
-    v[3] = (byte) -v[0];
-    // also test computing using BytesRef with nonzero offset
-    assertEquals(0, VectorUtil.dotProduct(new BytesRef(v, 0, 2), new BytesRef(v, 2, 2)), DELTA);
+    byte[] a = new byte[2];
+    a[0] = (byte) random().nextInt(100);
+    a[1] = (byte) random().nextInt(100);
+    byte[] b = new byte[2];
+    b[0] = a[1];
+    b[1] = (byte) -a[0];
+    assertEquals(0, VectorUtil.dotProduct(a, b), DELTA);
   }
 
   public void testSelfSquareDistanceBytes() {
     // the l2 distance of a vector with itself is zero
-    BytesRef v = randomVectorBytes();
+    byte[] v = randomVectorBytes();
     assertEquals(0, VectorUtil.squareDistance(v, v), DELTA);
   }
 
   public void testBasicSquareDistanceBytes() {
-    assertEquals(
-        12,
-        VectorUtil.squareDistance(
-            new BytesRef(new byte[] {1, 2, 3}), new BytesRef(new byte[] {-1, 0, 5})),
-        0);
+    assertEquals(12, VectorUtil.squareDistance(new byte[] {1, 2, 3}, new byte[] {-1, 0, 5}), 0);
   }
 
   public void testRandomSquareDistanceBytes() {
     // the square distance of a vector with its inverse is equal to four times the sum of squares of
     // its components
-    BytesRef v = randomVectorBytes();
-    BytesRef u = negative(v);
+    byte[] v = randomVectorBytes();
+    byte[] u = negative(v);
     assertEquals(4 * l2(v), VectorUtil.squareDistance(u, v), DELTA);
   }
 
   public void testBasicCosineBytes() {
-    assertEquals(
-        0.11952f,
-        VectorUtil.cosine(new BytesRef(new byte[] {1, 2, 3}), new BytesRef(new byte[] {-10, 0, 5})),
-        DELTA);
+    assertEquals(0.11952f, VectorUtil.cosine(new byte[] {1, 2, 3}, new byte[] {-10, 0, 5}), DELTA);
   }
 
   public void testSelfCosineBytes() {
     // the dot product of a vector with itself is always equal to 1
-    BytesRef v = randomVectorBytes();
+    byte[] v = randomVectorBytes();
     // ensure the vector is non-zero so that cosine is defined
-    v.bytes[0] = (byte) (random().nextInt(126) + 1);
+    v[0] = (byte) (random().nextInt(126) + 1);
     assertEquals(1.0f, VectorUtil.cosine(v, v), DELTA);
   }
 
@@ -258,15 +277,111 @@ public class TestVectorUtil extends LuceneTestCase {
     assertEquals(0, VectorUtil.cosine(u, v), DELTA);
   }
 
-  public void testToBytesRef() {
+  interface ToIntBiFunction {
+    int apply(byte[] a, byte[] b);
+  }
+
+  public void testBasicXorBitCount() {
+    testBasicXorBitCountImpl(VectorUtil::xorBitCount);
+    testBasicXorBitCountImpl(VectorUtil::xorBitCountInt);
+    testBasicXorBitCountImpl(VectorUtil::xorBitCountLong);
+    // test sanity
+    testBasicXorBitCountImpl(TestVectorUtil::xorBitCount);
+  }
+
+  void testBasicXorBitCountImpl(ToIntBiFunction xorBitCount) {
+    assertEquals(0, xorBitCount.apply(new byte[] {1}, new byte[] {1}));
+    assertEquals(0, xorBitCount.apply(new byte[] {1, 2, 3}, new byte[] {1, 2, 3}));
+    assertEquals(1, xorBitCount.apply(new byte[] {1, 2, 3}, new byte[] {0, 2, 3}));
+    assertEquals(2, xorBitCount.apply(new byte[] {1, 2, 3}, new byte[] {0, 6, 3}));
+    assertEquals(3, xorBitCount.apply(new byte[] {1, 2, 3}, new byte[] {0, 6, 7}));
+    assertEquals(4, xorBitCount.apply(new byte[] {1, 2, 3}, new byte[] {2, 6, 7}));
+
+    // 32-bit / int boundary
+    assertEquals(0, xorBitCount.apply(new byte[] {1, 2, 3, 4}, new byte[] {1, 2, 3, 4}));
+    assertEquals(1, xorBitCount.apply(new byte[] {1, 2, 3, 4}, new byte[] {0, 2, 3, 4}));
+    assertEquals(0, xorBitCount.apply(new byte[] {1, 2, 3, 4, 5}, new byte[] {1, 2, 3, 4, 5}));
+    assertEquals(1, xorBitCount.apply(new byte[] {1, 2, 3, 4, 5}, new byte[] {0, 2, 3, 4, 5}));
+
+    // 64-bit / long boundary
     assertEquals(
-        new BytesRef(new byte[] {-128, 0, 127}),
-        VectorUtil.toBytesRef(new float[] {-128f, 0, 127f}));
+        0,
+        xorBitCount.apply(
+            new byte[] {1, 2, 3, 4, 5, 6, 7, 8}, new byte[] {1, 2, 3, 4, 5, 6, 7, 8}));
     assertEquals(
-        new BytesRef(new byte[] {-19, 0, 33}),
-        VectorUtil.toBytesRef(new float[] {-19.9f, 0.5f, 33.7f}));
-    expectThrows(
-        IllegalArgumentException.class, () -> VectorUtil.toBytesRef(new float[] {-128.1f}));
-    expectThrows(IllegalArgumentException.class, () -> VectorUtil.toBytesRef(new float[] {127.1f}));
+        1,
+        xorBitCount.apply(
+            new byte[] {1, 2, 3, 4, 5, 6, 7, 8}, new byte[] {0, 2, 3, 4, 5, 6, 7, 8}));
+
+    assertEquals(
+        0,
+        xorBitCount.apply(
+            new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9}, new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9}));
+    assertEquals(
+        1,
+        xorBitCount.apply(
+            new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9}, new byte[] {0, 2, 3, 4, 5, 6, 7, 8, 9}));
+  }
+
+  public void testXorBitCount() {
+    int iterations = atLeast(100);
+    for (int i = 0; i < iterations; i++) {
+      int size = random().nextInt(1024);
+      byte[] a = new byte[size];
+      byte[] b = new byte[size];
+      random().nextBytes(a);
+      random().nextBytes(b);
+
+      int expected = xorBitCount(a, b);
+      assertEquals(expected, VectorUtil.xorBitCount(a, b));
+      assertEquals(expected, VectorUtil.xorBitCountInt(a, b));
+      assertEquals(expected, VectorUtil.xorBitCountLong(a, b));
+    }
+  }
+
+  private static int xorBitCount(byte[] a, byte[] b) {
+    int res = 0;
+    for (int i = 0; i < a.length; i++) {
+      byte x = a[i];
+      byte y = b[i];
+      for (int j = 0; j < Byte.SIZE; j++) {
+        if (x == y) break;
+        if ((x & 0x01) != (y & 0x01)) res++;
+        x = (byte) ((x & 0xFF) >> 1);
+        y = (byte) ((y & 0xFF) >> 1);
+      }
+    }
+    return res;
+  }
+
+  public void testFindNextGEQ() {
+    int padding = TestUtil.nextInt(random(), 0, 5);
+    int[] values = new int[128 + padding];
+    int v = 0;
+    for (int i = 0; i < 128; ++i) {
+      v += TestUtil.nextInt(random(), 1, 1000);
+      values[i] = v;
+    }
+
+    // Now duel with slowFindFirstGreater
+    for (int iter = 0; iter < 1_000; ++iter) {
+      int from = TestUtil.nextInt(random(), 0, 127);
+      int target =
+          TestUtil.nextInt(random(), values[from], Math.max(values[from], values[127]))
+              + random().nextInt(10)
+              - 5;
+      assertEquals(
+          slowFindNextGEQ(values, 128, target, from),
+          VectorUtil.findNextGEQ(values, target, from, 128));
+    }
+  }
+
+  private static int slowFindNextGEQ(int[] buffer, int length, int target, int from) {
+    for (int i = from; i < length; ++i) {
+      if (buffer[i] >= target) {
+        return i;
+      }
+    }
+    return length;
   }
 }

@@ -87,7 +87,7 @@ public class TestAutomatonQuery extends LuceneTestCase {
     if (VERBOSE) {
       System.out.println("TEST: run aq=" + query);
     }
-    return searcher.search(query, 5).totalHits.value;
+    return searcher.search(query, 5).totalHits.value();
   }
 
   private void assertAutomatonHits(int expected, Automaton automaton) throws IOException {
@@ -101,6 +101,14 @@ public class TestAutomatonQuery extends LuceneTestCase {
         automatonQueryNrHits(
             new AutomatonQuery(
                 newTerm("bogus"), automaton, false, MultiTermQuery.CONSTANT_SCORE_REWRITE)));
+    assertEquals(
+        expected,
+        automatonQueryNrHits(
+            new AutomatonQuery(
+                newTerm("bogus"),
+                automaton,
+                false,
+                MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE)));
     assertEquals(
         expected,
         automatonQueryNrHits(

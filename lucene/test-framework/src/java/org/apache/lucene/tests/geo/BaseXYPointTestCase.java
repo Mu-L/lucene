@@ -53,6 +53,7 @@ import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SerialMergeScheduler;
+import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
@@ -629,6 +630,7 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
 
       boolean fail = false;
 
+      StoredFields storedFields = s.storedFields();
       for (int docID = 0; docID < ys.length / 2; docID++) {
         float yDoc1 = ys[2 * docID];
         float xDoc1 = xs[2 * docID];
@@ -641,14 +643,14 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
         boolean expected = result1 || result2;
 
         if (hits.get(docID) != expected) {
-          String id = s.doc(docID).get("id");
+          String id = storedFields.document(docID).get("id");
           if (expected) {
             System.out.println("TEST: id=" + id + " docID=" + docID + " should match but did not");
           } else {
             System.out.println("TEST: id=" + id + " docID=" + docID + " should not match but did");
           }
           System.out.println("  rect=" + rect);
-          System.out.println("  x=" + xDoc1 + " y=" + yDoc1 + "\n  x=" + xDoc2 + " y" + yDoc2);
+          System.out.println("  x=" + xDoc1 + " y=" + yDoc1 + "\n  x=" + xDoc2 + " y=" + yDoc2);
           System.out.println("  result1=" + result1 + " result2=" + result2);
           fail = true;
         }
@@ -771,7 +773,7 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
 
   protected abstract Query newGeometryQuery(String field, XYGeometry... geometries);
 
-  static final boolean rectContainsPoint(XYRectangle rect, double x, double y) {
+  static boolean rectContainsPoint(XYRectangle rect, double x, double y) {
     if (y < rect.minY || y > rect.maxY) {
       return false;
     }
@@ -1330,6 +1332,7 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
     IndexReader reader = writer.getReader();
     IndexSearcher searcher = newSearcher(reader);
 
+    StoredFields storedFields = reader.storedFields();
     for (int i = 0; i < numQueries; i++) {
       XYCircle circle = ShapeTestUtil.nextCircle();
       float x = circle.getX();
@@ -1338,8 +1341,8 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
 
       BitSet expected = new BitSet();
       for (int doc = 0; doc < reader.maxDoc(); doc++) {
-        float docX = reader.document(doc).getField("x").numericValue().floatValue();
-        float docY = reader.document(doc).getField("y").numericValue().floatValue();
+        float docX = storedFields.document(doc).getField("x").numericValue().floatValue();
+        float docY = storedFields.document(doc).getField("y").numericValue().floatValue();
         double distance = cartesianDistance(x, y, docX, docY);
         if (distance <= radius) {
           expected.set(doc);
@@ -1359,10 +1362,10 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
       } catch (AssertionError e) {
         System.out.println("center: (" + x + "," + y + "), radius=" + radius);
         for (int doc = 0; doc < reader.maxDoc(); doc++) {
-          float docX = reader.document(doc).getField("x").numericValue().floatValue();
-          float docY = reader.document(doc).getField("y").numericValue().floatValue();
+          float docX = storedFields.document(doc).getField("x").numericValue().floatValue();
+          float docY = storedFields.document(doc).getField("y").numericValue().floatValue();
           double distance = cartesianDistance(x, y, docX, docY);
-          System.out.println("" + doc + ": (" + x + "," + y + "), distance=" + distance);
+          System.out.println(doc + ": (" + x + "," + y + "), distance=" + distance);
         }
         throw e;
       }
@@ -1472,18 +1475,18 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
 
   public void testSmallSetRect() throws Exception {
     TopDocs td = searchSmallSet(newRectQuery("point", 32.778f, 32.779f, -96.778f, -96.777f), 5);
-    assertEquals(4, td.totalHits.value);
+    assertEquals(4, td.totalHits.value());
   }
 
   public void testSmallSetRect2() throws Exception {
     TopDocs td = searchSmallSet(newRectQuery("point", -45.0f, -44.0f, -180.0f, 180.0f), 20);
-    assertEquals(2, td.totalHits.value);
+    assertEquals(2, td.totalHits.value());
   }
 
   public void testSmallSetMultiValued() throws Exception {
     TopDocs td = searchSmallSet(newRectQuery("point", 32.755f, 32.776f, -180f, 180.770f), 20);
     // 3 single valued docs + 2 multi-valued docs
-    assertEquals(5, td.totalHits.value);
+    assertEquals(5, td.totalHits.value());
   }
 
   public void testSmallSetWholeSpace() throws Exception {
@@ -1492,7 +1495,7 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
             newRectQuery(
                 "point", -Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, Float.MAX_VALUE),
             20);
-    assertEquals(24, td.totalHits.value);
+    assertEquals(24, td.totalHits.value());
   }
 
   public void testSmallSetPoly() throws Exception {
@@ -1522,7 +1525,7 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
                       -96.7682647f
                     })),
             5);
-    assertEquals(2, td.totalHits.value);
+    assertEquals(2, td.totalHits.value());
   }
 
   public void testSmallSetPolyWholeSpace() throws Exception {
@@ -1546,18 +1549,18 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
                       -Float.MAX_VALUE
                     })),
             20);
-    assertEquals("testWholeMap failed", 24, td.totalHits.value);
+    assertEquals("testWholeMap failed", 24, td.totalHits.value());
   }
 
   public void testSmallSetDistance() throws Exception {
     TopDocs td =
         searchSmallSet(newDistanceQuery("point", 32.94823588839368f, -96.4538113027811f, 6.0f), 20);
-    assertEquals(11, td.totalHits.value);
+    assertEquals(11, td.totalHits.value());
   }
 
   public void testSmallSetTinyDistance() throws Exception {
     TopDocs td = searchSmallSet(newDistanceQuery("point", 40.720611f, -73.998776f, 0.1f), 20);
-    assertEquals(2, td.totalHits.value);
+    assertEquals(2, td.totalHits.value());
   }
 
   /** Explicitly large */
@@ -1565,6 +1568,6 @@ public abstract class BaseXYPointTestCase extends LuceneTestCase {
     TopDocs td =
         searchSmallSet(
             newDistanceQuery("point", 32.94823588839368f, -96.4538113027811f, Float.MAX_VALUE), 20);
-    assertEquals(24, td.totalHits.value);
+    assertEquals(24, td.totalHits.value());
   }
 }

@@ -23,7 +23,7 @@ import org.apache.lucene.document.DoubleDocValuesField;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.FieldType;
-import org.apache.lucene.document.KnnVectorField;
+import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedDocValuesField;
@@ -40,7 +40,9 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.tests.util.TestUtil;
+import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.VectorUtil;
 
@@ -583,7 +585,7 @@ public class TestFieldExistsQuery extends LuceneTestCase {
           Document doc = new Document();
           boolean hasValue = random().nextBoolean();
           if (hasValue) {
-            doc.add(new KnnVectorField("vector", randomVector(5)));
+            doc.add(new KnnFloatVectorField("vector", randomVector(5)));
             doc.add(new StringField("has_value", "yes", Store.NO));
           }
           doc.add(new StringField("field", "value", Store.NO));
@@ -632,7 +634,7 @@ public class TestFieldExistsQuery extends LuceneTestCase {
         RandomIndexWriter iw = new RandomIndexWriter(random(), dir)) {
       for (int i = 0; i < 100; ++i) {
         Document doc = new Document();
-        doc.add(new KnnVectorField("vector", randomVector(5)));
+        doc.add(new KnnFloatVectorField("vector", randomVector(5)));
         iw.addDocument(doc);
       }
       iw.commit();
@@ -642,6 +644,39 @@ public class TestFieldExistsQuery extends LuceneTestCase {
         Query query = new FieldExistsQuery("vector");
         assertTrue(searcher.rewrite(query) instanceof MatchAllDocsQuery);
         assertEquals(100, searcher.count(query));
+      }
+    }
+  }
+
+  public void testDeleteKnnVector() throws IOException {
+    try (Directory dir = newDirectory();
+        RandomIndexWriter iw = new RandomIndexWriter(random(), dir)) {
+      final int numDocs = atLeast(100);
+
+      boolean allDocsHaveVector = random().nextBoolean();
+      BitSet docWithVector = new FixedBitSet(numDocs);
+      for (int i = 0; i < numDocs; ++i) {
+        Document doc = new Document();
+        if (allDocsHaveVector || random().nextBoolean()) {
+          doc.add(new KnnFloatVectorField("vector", randomVector(5)));
+          docWithVector.set(i);
+        }
+        doc.add(new StringField("id", Integer.toString(i), Store.NO));
+        iw.addDocument(doc);
+      }
+      if (random().nextBoolean()) {
+        final int numDeleted = random().nextInt(numDocs) + 1;
+        for (int i = 0; i < numDeleted; ++i) {
+          iw.deleteDocuments(new Term("id", Integer.toString(i)));
+          docWithVector.clear(i);
+        }
+      }
+
+      try (IndexReader reader = iw.getReader()) {
+        final IndexSearcher searcher = newSearcher(reader);
+
+        final int count = searcher.count(new FieldExistsQuery("vector"));
+        assertEquals(docWithVector.cardinality(), count);
       }
     }
   }
@@ -656,7 +691,7 @@ public class TestFieldExistsQuery extends LuceneTestCase {
       for (int i = 0; i < numDocs; ++i) {
         Document doc = new Document();
         if (allDocsHaveVector || random().nextBoolean()) {
-          doc.add(new KnnVectorField("vector", randomVector(5)));
+          doc.add(new KnnFloatVectorField("vector", randomVector(5)));
           numVectors++;
         }
         doc.add(new StringField("field", "value" + (i % 2), Store.NO));
@@ -685,7 +720,7 @@ public class TestFieldExistsQuery extends LuceneTestCase {
         RandomIndexWriter iw = new RandomIndexWriter(random(), dir)) {
       // 1st segment has the field, but 2nd one does not
       Document doc = new Document();
-      doc.add(new KnnVectorField("vector", randomVector(3)));
+      doc.add(new KnnFloatVectorField("vector", randomVector(3)));
       iw.addDocument(doc);
       iw.commit();
       iw.addDocument(new Document());
@@ -769,7 +804,7 @@ public class TestFieldExistsQuery extends LuceneTestCase {
     final int maxDoc = searcher.getIndexReader().maxDoc();
     final TopDocs td1 = searcher.search(q1, maxDoc, scores ? Sort.RELEVANCE : Sort.INDEXORDER);
     final TopDocs td2 = searcher.search(q2, maxDoc, scores ? Sort.RELEVANCE : Sort.INDEXORDER);
-    assertEquals(td1.totalHits.value, td2.totalHits.value);
+    assertEquals(td1.totalHits.value(), td2.totalHits.value());
     for (int i = 0; i < td1.scoreDocs.length; ++i) {
       assertEquals(td1.scoreDocs[i].doc, td2.scoreDocs[i].doc);
       if (scores) {

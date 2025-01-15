@@ -27,6 +27,7 @@ import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.StoredFieldVisitor;
+import org.apache.lucene.index.StoredFields;
 
 /**
  * Shuffles field numbers around to try to trip bugs where field numbers are assumed to always be
@@ -47,8 +48,14 @@ public class MismatchedLeafReader extends FilterLeafReader {
   }
 
   @Override
-  public void document(int docID, StoredFieldVisitor visitor) throws IOException {
-    in.document(docID, new MismatchedVisitor(visitor));
+  public StoredFields storedFields() throws IOException {
+    final StoredFields inStoredFields = in.storedFields();
+    return new StoredFields() {
+      @Override
+      public void document(int docID, StoredFieldVisitor visitor) throws IOException {
+        inStoredFields.document(docID, new MismatchedVisitor(visitor, shuffled));
+      }
+    };
   }
 
   @Override
@@ -77,11 +84,12 @@ public class MismatchedLeafReader extends FilterLeafReader {
           new FieldInfo(
               oldInfo.name, // name
               i, // number
-              oldInfo.hasVectors(), // storeTermVector
+              oldInfo.hasTermVectors(), // storeTermVector
               oldInfo.omitsNorms(), // omitNorms
               oldInfo.hasPayloads(), // storePayloads
               oldInfo.getIndexOptions(), // indexOptions
               oldInfo.getDocValuesType(), // docValuesType
+              oldInfo.docValuesSkipIndexType(), // docValuesSkipIndexType
               oldInfo.getDocValuesGen(), // dvGen
               oldInfo.attributes(), // attributes
               oldInfo.getPointDimensionCount(), // data dimension count
@@ -91,7 +99,8 @@ public class MismatchedLeafReader extends FilterLeafReader {
               oldInfo.getVectorEncoding(), // numeric type of vector samples
               // distance function for calculating similarity of the field's vector
               oldInfo.getVectorSimilarityFunction(),
-              oldInfo.isSoftDeletesField()); // used as soft-deletes field
+              oldInfo.isSoftDeletesField(), // used as soft-deletes field
+              oldInfo.isParentField());
       shuffled.set(i, newInfo);
     }
 
@@ -101,11 +110,13 @@ public class MismatchedLeafReader extends FilterLeafReader {
   /** StoredFieldsVisitor that remaps actual field numbers to our new shuffled ones. */
   // TODO: its strange this part of our IR api exposes FieldInfo,
   // no other "user-accessible" codec apis do this?
-  class MismatchedVisitor extends StoredFieldVisitor {
+  static class MismatchedVisitor extends StoredFieldVisitor {
     final StoredFieldVisitor in;
+    final FieldInfos shuffled;
 
-    MismatchedVisitor(StoredFieldVisitor in) {
+    MismatchedVisitor(StoredFieldVisitor in, FieldInfos shuffled) {
       this.in = in;
+      this.shuffled = shuffled;
     }
 
     @Override

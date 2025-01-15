@@ -73,13 +73,13 @@ public class TestHighlighterPhrase extends LuceneTestCase {
       final IndexSearcher indexSearcher = newSearcher(indexReader);
       final PhraseQuery phraseQuery = new PhraseQuery(FIELD, "fox", "jumped");
       TopDocs hits = indexSearcher.search(phraseQuery, 1);
-      assertEquals(1, hits.totalHits.value);
+      assertEquals(1, hits.totalHits.value());
       final Highlighter highlighter =
           new Highlighter(
               new SimpleHTMLFormatter(), new SimpleHTMLEncoder(), new QueryScorer(phraseQuery));
 
       final TokenStream tokenStream =
-          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.getTermVectors(0), -1);
+          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.termVectors().get(0), -1);
       assertEquals(
           highlighter.getBestFragment(new TokenStreamConcurrent(), TEXT),
           highlighter.getBestFragment(tokenStream, TEXT));
@@ -134,7 +134,7 @@ public class TestHighlighterPhrase extends LuceneTestCase {
         assertEquals(0, position);
         final TokenStream tokenStream =
             TokenSources.getTermVectorTokenStreamOrNull(
-                FIELD, indexReader.getTermVectors(position), -1);
+                FIELD, indexReader.termVectors().get(position), -1);
         assertEquals(
             highlighter.getBestFragment(new TokenStreamConcurrent(), TEXT),
             highlighter.getBestFragment(tokenStream, TEXT));
@@ -170,12 +170,12 @@ public class TestHighlighterPhrase extends LuceneTestCase {
       final IndexSearcher indexSearcher = newSearcher(indexReader);
       final PhraseQuery phraseQuery = new PhraseQuery(FIELD, "did", "jump");
       TopDocs hits = indexSearcher.search(phraseQuery, 1);
-      assertEquals(0, hits.totalHits.value);
+      assertEquals(0, hits.totalHits.value());
       final Highlighter highlighter =
           new Highlighter(
               new SimpleHTMLFormatter(), new SimpleHTMLEncoder(), new QueryScorer(phraseQuery));
       final TokenStream tokenStream =
-          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.getTermVectors(0), -1);
+          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.termVectors().get(0), -1);
       assertEquals(
           highlighter.getBestFragment(new TokenStreamSparse(), TEXT),
           highlighter.getBestFragment(tokenStream, TEXT));
@@ -209,12 +209,12 @@ public class TestHighlighterPhrase extends LuceneTestCase {
       final IndexSearcher indexSearcher = newSearcher(indexReader);
       final PhraseQuery phraseQuery = new PhraseQuery(1, FIELD, "did", "jump");
       TopDocs hits = indexSearcher.search(phraseQuery, 1);
-      assertEquals(1, hits.totalHits.value);
+      assertEquals(1, hits.totalHits.value());
       final Highlighter highlighter =
           new Highlighter(
               new SimpleHTMLFormatter(), new SimpleHTMLEncoder(), new QueryScorer(phraseQuery));
       final TokenStream tokenStream =
-          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.getTermVectors(0), -1);
+          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.termVectors().get(0), -1);
       assertEquals(
           "the fox <B>did</B> not <B>jump</B>", highlighter.getBestFragment(tokenStream, TEXT));
     } finally {
@@ -255,12 +255,12 @@ public class TestHighlighterPhrase extends LuceneTestCase {
               true);
 
       TopDocs hits = indexSearcher.search(phraseQuery, 1);
-      assertEquals(0, hits.totalHits.value);
+      assertEquals(0, hits.totalHits.value());
       final Highlighter highlighter =
           new Highlighter(
               new SimpleHTMLFormatter(), new SimpleHTMLEncoder(), new QueryScorer(phraseQuery));
       final TokenStream tokenStream =
-          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.getTermVectors(0), -1);
+          TokenSources.getTermVectorTokenStreamOrNull(FIELD, indexReader.termVectors().get(0), -1);
       assertEquals(
           highlighter.getBestFragment(new TokenStreamSparse(), TEXT),
           highlighter.getBestFragment(tokenStream, TEXT));
@@ -293,7 +293,7 @@ public class TestHighlighterPhrase extends LuceneTestCase {
               .build();
 
       TopDocs hits = indexSearcher.search(phraseQuery, 100);
-      assertEquals(1, hits.totalHits.value);
+      assertEquals(1, hits.totalHits.value());
       final Highlighter highlighter =
           new Highlighter(
               new SimpleHTMLFormatter(), new SimpleHTMLEncoder(), new QueryScorer(phraseQuery));
@@ -326,7 +326,7 @@ public class TestHighlighterPhrase extends LuceneTestCase {
               .build();
 
       TopDocs hits = indexSearcher.search(phraseQuery, 100);
-      assertEquals(1, hits.totalHits.value);
+      assertEquals(1, hits.totalHits.value());
 
       final Highlighter highlighter =
           new Highlighter(

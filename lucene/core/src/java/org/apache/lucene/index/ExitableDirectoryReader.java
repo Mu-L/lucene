@@ -17,10 +17,12 @@
 package org.apache.lucene.index;
 
 import java.io.IOException;
+import java.util.Objects;
 import org.apache.lucene.index.FilterLeafReader.FilterTerms;
 import org.apache.lucene.index.FilterLeafReader.FilterTermsEnum;
 import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.KnnCollector;
+import org.apache.lucene.search.VectorScorer;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.CompiledAutomaton;
@@ -30,12 +32,10 @@ import org.apache.lucene.util.automaton.CompiledAutomaton;
  * {@link QueryTimeout} implementation object to be checked periodically to see if the thread should
  * exit or not. If {@link QueryTimeout#shouldExit()} returns true, an {@link ExitingReaderException}
  * is thrown.
- *
- * @see org.apache.lucene.search.TimeLimitingCollector
  */
 public class ExitableDirectoryReader extends FilterDirectoryReader {
 
-  private QueryTimeout queryTimeout;
+  private final QueryTimeout queryTimeout;
 
   /** Exception that is thrown to prematurely terminate a term enumeration. */
   @SuppressWarnings("serial")
@@ -49,11 +49,11 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
 
   /** Wrapper class for a SubReaderWrapper that is used by the ExitableDirectoryReader. */
   public static class ExitableSubReaderWrapper extends SubReaderWrapper {
-    private QueryTimeout queryTimeout;
+    private final QueryTimeout queryTimeout;
 
     /** Constructor * */
     public ExitableSubReaderWrapper(QueryTimeout queryTimeout) {
-      this.queryTimeout = queryTimeout;
+      this.queryTimeout = Objects.requireNonNull(queryTimeout);
     }
 
     @Override
@@ -72,7 +72,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
     /** Constructor * */
     public ExitableFilterAtomicReader(LeafReader in, QueryTimeout queryTimeout) {
       super(in);
-      this.queryTimeout = queryTimeout;
+      this.queryTimeout = Objects.requireNonNull(queryTimeout);
     }
 
     @Override
@@ -81,9 +81,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (pointValues == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled())
-          ? new ExitablePointValues(pointValues, queryTimeout)
-          : pointValues;
+      return new ExitablePointValues(pointValues, queryTimeout);
     }
 
     @Override
@@ -92,7 +90,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (terms == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled()) ? new ExitableTerms(terms, queryTimeout) : terms;
+      return new ExitableTerms(terms, queryTimeout);
     }
 
     // this impl does not change deletes or data so we can delegate the
@@ -113,41 +111,39 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (numericDocValues == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled())
-          ? new FilterNumericDocValues(numericDocValues) {
-            private int docToCheck = 0;
+      return new FilterNumericDocValues(numericDocValues) {
+        private int docToCheck = 0;
 
-            @Override
-            public int advance(int target) throws IOException {
-              final int advance = super.advance(target);
-              if (advance >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advance;
-            }
-
-            @Override
-            public boolean advanceExact(int target) throws IOException {
-              final boolean advanceExact = super.advanceExact(target);
-              if (target >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advanceExact;
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-              final int nextDoc = super.nextDoc();
-              if (nextDoc >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return nextDoc;
-            }
+        @Override
+        public int advance(int target) throws IOException {
+          final int advance = super.advance(target);
+          if (advance >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
           }
-          : numericDocValues;
+          return advance;
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+          final boolean advanceExact = super.advanceExact(target);
+          if (target >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return advanceExact;
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+          final int nextDoc = super.nextDoc();
+          if (nextDoc >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return nextDoc;
+        }
+      };
     }
 
     @Override
@@ -156,41 +152,39 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (binaryDocValues == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled())
-          ? new FilterBinaryDocValues(binaryDocValues) {
-            private int docToCheck = 0;
+      return new FilterBinaryDocValues(binaryDocValues) {
+        private int docToCheck = 0;
 
-            @Override
-            public int advance(int target) throws IOException {
-              final int advance = super.advance(target);
-              if (target >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advance;
-            }
-
-            @Override
-            public boolean advanceExact(int target) throws IOException {
-              final boolean advanceExact = super.advanceExact(target);
-              if (target >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advanceExact;
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-              final int nextDoc = super.nextDoc();
-              if (nextDoc >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return nextDoc;
-            }
+        @Override
+        public int advance(int target) throws IOException {
+          final int advance = super.advance(target);
+          if (target >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
           }
-          : binaryDocValues;
+          return advance;
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+          final boolean advanceExact = super.advanceExact(target);
+          if (target >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return advanceExact;
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+          final int nextDoc = super.nextDoc();
+          if (nextDoc >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return nextDoc;
+        }
+      };
     }
 
     @Override
@@ -199,42 +193,40 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (sortedDocValues == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled())
-          ? new FilterSortedDocValues(sortedDocValues) {
+      return new FilterSortedDocValues(sortedDocValues) {
 
-            private int docToCheck = 0;
+        private int docToCheck = 0;
 
-            @Override
-            public int advance(int target) throws IOException {
-              final int advance = super.advance(target);
-              if (advance >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advance;
-            }
-
-            @Override
-            public boolean advanceExact(int target) throws IOException {
-              final boolean advanceExact = super.advanceExact(target);
-              if (target >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advanceExact;
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-              final int nextDoc = super.nextDoc();
-              if (nextDoc >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return nextDoc;
-            }
+        @Override
+        public int advance(int target) throws IOException {
+          final int advance = super.advance(target);
+          if (advance >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
           }
-          : sortedDocValues;
+          return advance;
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+          final boolean advanceExact = super.advanceExact(target);
+          if (target >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return advanceExact;
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+          final int nextDoc = super.nextDoc();
+          if (nextDoc >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return nextDoc;
+        }
+      };
     }
 
     @Override
@@ -243,42 +235,40 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (sortedNumericDocValues == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled())
-          ? new FilterSortedNumericDocValues(sortedNumericDocValues) {
+      return new FilterSortedNumericDocValues(sortedNumericDocValues) {
 
-            private int docToCheck = 0;
+        private int docToCheck = 0;
 
-            @Override
-            public int advance(int target) throws IOException {
-              final int advance = super.advance(target);
-              if (advance >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advance;
-            }
-
-            @Override
-            public boolean advanceExact(int target) throws IOException {
-              final boolean advanceExact = super.advanceExact(target);
-              if (target >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advanceExact;
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-              final int nextDoc = super.nextDoc();
-              if (nextDoc >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return nextDoc;
-            }
+        @Override
+        public int advance(int target) throws IOException {
+          final int advance = super.advance(target);
+          if (advance >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
           }
-          : sortedNumericDocValues;
+          return advance;
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+          final boolean advanceExact = super.advanceExact(target);
+          if (target >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return advanceExact;
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+          final int nextDoc = super.nextDoc();
+          if (nextDoc >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return nextDoc;
+        }
+      };
     }
 
     @Override
@@ -287,58 +277,64 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (sortedSetDocValues == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled())
-          ? new FilterSortedSetDocValues(sortedSetDocValues) {
+      return new FilterSortedSetDocValues(sortedSetDocValues) {
 
-            private int docToCheck = 0;
+        private int docToCheck = 0;
 
-            @Override
-            public int advance(int target) throws IOException {
-              final int advance = super.advance(target);
-              if (advance >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advance;
-            }
-
-            @Override
-            public boolean advanceExact(int target) throws IOException {
-              final boolean advanceExact = super.advanceExact(target);
-              if (target >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return advanceExact;
-            }
-
-            @Override
-            public int nextDoc() throws IOException {
-              final int nextDoc = super.nextDoc();
-              if (nextDoc >= docToCheck) {
-                checkAndThrow(in);
-                docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
-              }
-              return nextDoc;
-            }
+        @Override
+        public int advance(int target) throws IOException {
+          final int advance = super.advance(target);
+          if (advance >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
           }
-          : sortedSetDocValues;
+          return advance;
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+          final boolean advanceExact = super.advanceExact(target);
+          if (target >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = target + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return advanceExact;
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+          final int nextDoc = super.nextDoc();
+          if (nextDoc >= docToCheck) {
+            checkAndThrow(in);
+            docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
+          }
+          return nextDoc;
+        }
+      };
     }
 
     @Override
-    public VectorValues getVectorValues(String field) throws IOException {
-      final VectorValues vectorValues = in.getVectorValues(field);
+    public FloatVectorValues getFloatVectorValues(String field) throws IOException {
+      final FloatVectorValues vectorValues = in.getFloatVectorValues(field);
       if (vectorValues == null) {
         return null;
       }
-      return (queryTimeout.isTimeoutEnabled())
-          ? new ExitableVectorValues(vectorValues)
-          : vectorValues;
+      return new ExitableFloatVectorValues(vectorValues);
     }
 
     @Override
-    public TopDocs searchNearestVectors(
-        String field, float[] target, int k, Bits acceptDocs, int visitedLimit) throws IOException {
+    public ByteVectorValues getByteVectorValues(String field) throws IOException {
+      final ByteVectorValues vectorValues = in.getByteVectorValues(field);
+      if (vectorValues == null) {
+        return null;
+      }
+      return new ExitableByteVectorValues(vectorValues);
+    }
+
+    @Override
+    public void searchNearestVectors(
+        String field, float[] target, KnnCollector knnCollector, Bits acceptDocs)
+        throws IOException {
 
       // when acceptDocs is null due to no doc deleted, we will instantiate a new one that would
       // match all docs to allow timeout checking.
@@ -365,7 +361,39 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
             }
           };
 
-      return in.searchNearestVectors(field, target, k, timeoutCheckingAcceptDocs, visitedLimit);
+      in.searchNearestVectors(field, target, knnCollector, timeoutCheckingAcceptDocs);
+    }
+
+    @Override
+    public void searchNearestVectors(
+        String field, byte[] target, KnnCollector knnCollector, Bits acceptDocs)
+        throws IOException {
+      // when acceptDocs is null due to no doc deleted, we will instantiate a new one that would
+      // match all docs to allow timeout checking.
+      final Bits updatedAcceptDocs =
+          acceptDocs == null ? new Bits.MatchAllBits(maxDoc()) : acceptDocs;
+
+      Bits timeoutCheckingAcceptDocs =
+          new Bits() {
+            private static final int MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK = 16;
+            private int calls;
+
+            @Override
+            public boolean get(int index) {
+              if (calls++ % MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK == 0) {
+                checkAndThrowForSearchVectors();
+              }
+
+              return updatedAcceptDocs.get(index);
+            }
+
+            @Override
+            public int length() {
+              return updatedAcceptDocs.length();
+            }
+          };
+
+      in.searchNearestVectors(field, target, knnCollector, timeoutCheckingAcceptDocs);
     }
 
     private void checkAndThrowForSearchVectors() {
@@ -400,61 +428,146 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       }
     }
 
-    private class ExitableVectorValues extends FilterVectorValues {
-      private int docToCheck;
+    private class ExitableFloatVectorValues extends FloatVectorValues {
+      private final FloatVectorValues vectorValues;
 
-      public ExitableVectorValues(VectorValues vectorValues) {
-        super(vectorValues);
-        docToCheck = 0;
+      public ExitableFloatVectorValues(FloatVectorValues vectorValues) {
+        this.vectorValues = vectorValues;
       }
 
       @Override
-      public int advance(int target) throws IOException {
-        final int advance = super.advance(target);
-        if (advance >= docToCheck) {
-          checkAndThrow();
-          docToCheck = advance + DOCS_BETWEEN_TIMEOUT_CHECK;
-        }
-        return advance;
+      public int dimension() {
+        return vectorValues.dimension();
+      }
+
+      @Override
+      public float[] vectorValue(int ord) throws IOException {
+        return vectorValues.vectorValue(ord);
+      }
+
+      @Override
+      public int ordToDoc(int ord) {
+        return vectorValues.ordToDoc(ord);
+      }
+
+      @Override
+      public int size() {
+        return vectorValues.size();
+      }
+
+      @Override
+      public DocIndexIterator iterator() {
+        return createExitableIterator(vectorValues.iterator(), queryTimeout);
+      }
+
+      @Override
+      public VectorScorer scorer(float[] target) throws IOException {
+        return vectorValues.scorer(target);
+      }
+
+      @Override
+      public FloatVectorValues copy() {
+        throw new UnsupportedOperationException();
+      }
+    }
+
+    private class ExitableByteVectorValues extends ByteVectorValues {
+      private final ByteVectorValues vectorValues;
+
+      public ExitableByteVectorValues(ByteVectorValues vectorValues) {
+        this.vectorValues = vectorValues;
+      }
+
+      @Override
+      public int dimension() {
+        return vectorValues.dimension();
+      }
+
+      @Override
+      public int size() {
+        return vectorValues.size();
+      }
+
+      @Override
+      public byte[] vectorValue(int ord) throws IOException {
+        return vectorValues.vectorValue(ord);
+      }
+
+      @Override
+      public int ordToDoc(int ord) {
+        return vectorValues.ordToDoc(ord);
+      }
+
+      @Override
+      public DocIndexIterator iterator() {
+        return createExitableIterator(vectorValues.iterator(), queryTimeout);
+      }
+
+      @Override
+      public VectorScorer scorer(byte[] target) throws IOException {
+        return vectorValues.scorer(target);
+      }
+
+      @Override
+      public ByteVectorValues copy() {
+        throw new UnsupportedOperationException();
+      }
+    }
+  }
+
+  private static KnnVectorValues.DocIndexIterator createExitableIterator(
+      KnnVectorValues.DocIndexIterator delegate, QueryTimeout queryTimeout) {
+    return new KnnVectorValues.DocIndexIterator() {
+      private int nextCheck;
+
+      @Override
+      public int index() {
+        return delegate.index();
+      }
+
+      @Override
+      public int docID() {
+        return delegate.docID();
       }
 
       @Override
       public int nextDoc() throws IOException {
-        final int nextDoc = super.nextDoc();
-        if (nextDoc >= docToCheck) {
+        int doc = delegate.nextDoc();
+        if (doc >= nextCheck) {
           checkAndThrow();
-          docToCheck = nextDoc + DOCS_BETWEEN_TIMEOUT_CHECK;
+          nextCheck = doc + ExitableFilterAtomicReader.DOCS_BETWEEN_TIMEOUT_CHECK;
         }
-        return nextDoc;
+        return doc;
       }
 
       @Override
-      public float[] vectorValue() throws IOException {
-        return in.vectorValue();
+      public long cost() {
+        return delegate.cost();
       }
 
       @Override
-      public BytesRef binaryValue() throws IOException {
-        return in.binaryValue();
+      public int advance(int target) throws IOException {
+        int doc = delegate.advance(target);
+        if (doc >= nextCheck) {
+          checkAndThrow();
+          nextCheck = doc + ExitableFilterAtomicReader.DOCS_BETWEEN_TIMEOUT_CHECK;
+        }
+        return doc;
       }
 
-      /**
-       * Throws {@link ExitingReaderException} if {@link QueryTimeout#shouldExit()} returns true, or
-       * if {@link Thread#interrupted()} returns true.
-       */
       private void checkAndThrow() {
         if (queryTimeout.shouldExit()) {
           throw new ExitingReaderException(
-              "The request took too long to iterate over vector values. Timeout: "
+              "The request took too long to iterate over knn vector values. Timeout: "
                   + queryTimeout.toString()
-                  + ", VectorValues="
-                  + in);
+                  + ", KnnVectorValues="
+                  + delegate);
         } else if (Thread.interrupted()) {
           throw new ExitingReaderException(
-              "Interrupted while iterating over vector values. VectorValues=" + in);
+              "Interrupted while iterating over knn vector values. KnnVectorValues=" + delegate);
         }
       }
-    }
+    };
   }
 
   /** Wrapper class for another PointValues implementation that is used by ExitableFields. */
@@ -465,7 +578,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
 
     private ExitablePointValues(PointValues in, QueryTimeout queryTimeout) {
       this.in = in;
-      this.queryTimeout = queryTimeout;
+      this.queryTimeout = Objects.requireNonNull(queryTimeout);
       checkAndThrow();
     }
 
@@ -549,7 +662,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
         PointValues pointValues, PointValues.PointTree in, QueryTimeout queryTimeout) {
       this.pointValues = pointValues;
       this.in = in;
-      this.queryTimeout = queryTimeout;
+      this.queryTimeout = Objects.requireNonNull(queryTimeout);
       this.exitableIntersectVisitor = new ExitableIntersectVisitor(queryTimeout);
     }
 
@@ -567,7 +680,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
       if (queryTimeout.shouldExit()) {
         throw new ExitingReaderException(
             "The request took too long to intersect point values. Timeout: "
-                + queryTimeout.toString()
+                + queryTimeout
                 + ", PointValues="
                 + pointValues);
       } else if (Thread.interrupted()) {
@@ -641,7 +754,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
     private int calls;
 
     private ExitableIntersectVisitor(QueryTimeout queryTimeout) {
-      this.queryTimeout = queryTimeout;
+      this.queryTimeout = Objects.requireNonNull(queryTimeout);
     }
 
     private void setIntersectVisitor(PointValues.IntersectVisitor in) {
@@ -699,12 +812,12 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
   /** Wrapper class for another Terms implementation that is used by ExitableFields. */
   public static class ExitableTerms extends FilterTerms {
 
-    private QueryTimeout queryTimeout;
+    private final QueryTimeout queryTimeout;
 
     /** Constructor * */
     public ExitableTerms(Terms terms, QueryTimeout queryTimeout) {
       super(terms);
-      this.queryTimeout = queryTimeout;
+      this.queryTimeout = Objects.requireNonNull(queryTimeout);
     }
 
     @Override
@@ -716,6 +829,16 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
     public TermsEnum iterator() throws IOException {
       return new ExitableTermsEnum(in.iterator(), queryTimeout);
     }
+
+    @Override
+    public BytesRef getMin() throws IOException {
+      return in.getMin();
+    }
+
+    @Override
+    public BytesRef getMax() throws IOException {
+      return in.getMax();
+    }
   }
 
   /**
@@ -726,12 +849,12 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
     // Create bit mask in the form of 0000 1111 for efficient checking
     private static final int NUM_CALLS_PER_TIMEOUT_CHECK = (1 << 4) - 1; // 15
     private int calls;
-    private QueryTimeout queryTimeout;
+    private final QueryTimeout queryTimeout;
 
     /** Constructor * */
     public ExitableTermsEnum(TermsEnum termsEnum, QueryTimeout queryTimeout) {
       super(termsEnum);
-      this.queryTimeout = queryTimeout;
+      this.queryTimeout = Objects.requireNonNull(queryTimeout);
       checkTimeoutWithSampling();
     }
 
@@ -770,11 +893,12 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
    */
   public ExitableDirectoryReader(DirectoryReader in, QueryTimeout queryTimeout) throws IOException {
     super(in, new ExitableSubReaderWrapper(queryTimeout));
-    this.queryTimeout = queryTimeout;
+    this.queryTimeout = Objects.requireNonNull(queryTimeout);
   }
 
   @Override
   protected DirectoryReader doWrapDirectoryReader(DirectoryReader in) throws IOException {
+    Objects.requireNonNull(queryTimeout, "Query timeout must not be null");
     return new ExitableDirectoryReader(in, queryTimeout);
   }
 
@@ -784,6 +908,7 @@ public class ExitableDirectoryReader extends FilterDirectoryReader {
    */
   public static DirectoryReader wrap(DirectoryReader in, QueryTimeout queryTimeout)
       throws IOException {
+    Objects.requireNonNull(queryTimeout, "Query timeout must not be null");
     return new ExitableDirectoryReader(in, queryTimeout);
   }
 

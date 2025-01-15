@@ -16,15 +16,13 @@
  */
 package org.apache.lucene.index;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,7 +30,6 @@ import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexWriterConfig.OpenMode;
-import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
@@ -42,7 +39,6 @@ import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.tests.store.MockDirectoryWrapper;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.tests.util.TestUtil;
-import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.InfoStream;
 
 /*
@@ -143,7 +139,7 @@ public class TestIndexFileDeleter extends LuceneTestCase {
             ? new String[] {"_3.scf"}
             : new String[] {"_3.cfs", "_3.cfe"};
     for (String f : cfsFiles3) {
-      assertTrue(!slowFileExists(dir, f));
+      assertFalse(slowFileExists(dir, f));
     }
 
     String[] cfsFiles1 =
@@ -188,22 +184,14 @@ public class TestIndexFileDeleter extends LuceneTestCase {
     Set<String> set2 = new HashSet<>();
     Set<String> extra = new HashSet<>();
 
-    for (int x = 0; x < files1.length; x++) {
-      set1.add(files1[x]);
-    }
-    for (int x = 0; x < files2.length; x++) {
-      set2.add(files2[x]);
-    }
-    Iterator<String> i1 = set1.iterator();
-    while (i1.hasNext()) {
-      String o = i1.next();
+    Collections.addAll(set1, files1);
+    Collections.addAll(set2, files2);
+    for (String o : set1) {
       if (!set2.contains(o)) {
         extra.add(o);
       }
     }
-    Iterator<String> i2 = set2.iterator();
-    while (i2.hasNext()) {
-      String o = i2.next();
+    for (String o : set2) {
       if (!set1.contains(o)) {
         extra.add(o);
       }
@@ -439,19 +427,13 @@ public class TestIndexFileDeleter extends LuceneTestCase {
 
     final AtomicBoolean doFailExc = new AtomicBoolean();
 
-    final ByteArrayOutputStream bytesLog = new ByteArrayOutputStream();
-    final PrintStream log = new PrintStream(bytesLog, true, IOUtils.UTF_8);
-
     dir.failOn(
         new MockDirectoryWrapper.Failure() {
           @Override
           public void eval(MockDirectoryWrapper dir) throws IOException {
             if (doFailExc.get() && random().nextInt(4) == 1) {
               if (callStackContains(IndexFileDeleter.class, "decRef")) {
-                RuntimeException re = new RuntimeException("fake fail");
-                log.println("Now throw fake exception:");
-                re.printStackTrace(log);
-                throw re;
+                throw new RuntimeException("fake fail");
               }
             }
           }
@@ -468,15 +450,10 @@ public class TestIndexFileDeleter extends LuceneTestCase {
               // suppress only FakeIOException:
               if (exc instanceof RuntimeException && exc.getMessage().equals("fake fail")) {
                 // ok to ignore
-                log.println("Ignoring \"ok\" exception:");
-                exc.printStackTrace(log);
-              } else if ((exc instanceof AlreadyClosedException
-                      || exc instanceof IllegalStateException)
+              } else if (exc instanceof IllegalStateException
                   && exc.getCause() != null
                   && "fake fail".equals(exc.getCause().getMessage())) {
                 // also ok to ignore
-                log.println("Ignoring \"ok\" exception:");
-                exc.printStackTrace(log);
               } else {
                 super.handleMergeException(exc);
               }
@@ -508,14 +485,10 @@ public class TestIndexFileDeleter extends LuceneTestCase {
           w.addDocument(doc);
         }
       } catch (Throwable t) {
-        if ((t.toString().contains("fake fail")
-            || (t.getCause() != null && t.getCause().toString().contains("fake fail")))) {
+        if (t.toString().contains("fake fail")
+            || (t.getCause() != null && t.getCause().toString().contains("fake fail"))) {
           // ok
-          log.println("Ignoring \"ok\" exception:");
-          t.printStackTrace(log);
         } else {
-          System.out.println("test failed!  full log:");
-          System.out.print(bytesLog.toString("UTF-8"));
           throw t;
         }
       }

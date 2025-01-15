@@ -18,7 +18,6 @@ package org.apache.lucene.index;
 
 import java.io.IOException;
 import java.io.StringReader;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -289,12 +288,10 @@ public class TestPayloads extends LuceneTestCase {
     reader.close();
   }
 
-  static final Charset utf8 = StandardCharsets.UTF_8;
-
   private void generateRandomData(byte[] data) {
     // this test needs the random data to be valid unicode
     String s = TestUtil.randomFixedByteLengthUnicodeString(random(), data.length);
-    byte[] b = s.getBytes(utf8);
+    byte[] b = s.getBytes(StandardCharsets.UTF_8);
     assert b.length == data.length;
     System.arraycopy(b, 0, data, 0, b.length);
   }
@@ -493,7 +490,7 @@ public class TestPayloads extends LuceneTestCase {
       this.pool = pool;
       payload = pool.get();
       generateRandomData(payload);
-      term = new String(payload, 0, payload.length, utf8);
+      term = new String(payload, StandardCharsets.UTF_8);
       first = true;
       payloadAtt = addAttribute(PayloadAttribute.class);
       termAtt = addAttribute(CharTermAttribute.class);
@@ -568,10 +565,9 @@ public class TestPayloads extends LuceneTestCase {
     iwc.setMergePolicy(newLogMergePolicy());
     RandomIndexWriter writer = new RandomIndexWriter(random(), dir, iwc);
     Document doc = new Document();
-    Field field = new TextField("field", "", Field.Store.NO);
     TokenStream ts = new MockTokenizer(MockTokenizer.WHITESPACE, true);
     ((Tokenizer) ts).setReader(new StringReader("here we go"));
-    field.setTokenStream(ts);
+    Field field = new Field("field", ts, TextField.TYPE_NOT_STORED);
     doc.add(field);
     writer.addDocument(doc);
     Token withPayload = new Token("withPayload", 0, 11);
@@ -601,22 +597,20 @@ public class TestPayloads extends LuceneTestCase {
     Directory dir = newDirectory();
     RandomIndexWriter writer = new RandomIndexWriter(random(), dir);
     Document doc = new Document();
-    Field field = new TextField("field", "", Field.Store.NO);
     TokenStream ts = new MockTokenizer(MockTokenizer.WHITESPACE, true);
+    Field field = new Field("field", ts, TextField.TYPE_NOT_STORED);
     ((Tokenizer) ts).setReader(new StringReader("here we go"));
     field.setTokenStream(ts);
     doc.add(field);
-    Field field2 = new TextField("field", "", Field.Store.NO);
     Token withPayload = new Token("withPayload", 0, 11);
     withPayload.setPayload(new BytesRef("test"));
     ts = new CannedTokenStream(withPayload);
     assertTrue(ts.hasAttribute(PayloadAttribute.class));
-    field2.setTokenStream(ts);
+    Field field2 = new Field("field", ts, TextField.TYPE_NOT_STORED);
     doc.add(field2);
-    Field field3 = new TextField("field", "", Field.Store.NO);
     ts = new MockTokenizer(MockTokenizer.WHITESPACE, true);
     ((Tokenizer) ts).setReader(new StringReader("nopayload"));
-    field3.setTokenStream(ts);
+    Field field3 = new Field("field", ts, TextField.TYPE_NOT_STORED);
     doc.add(field3);
     writer.addDocument(doc);
     DirectoryReader reader = writer.getReader();

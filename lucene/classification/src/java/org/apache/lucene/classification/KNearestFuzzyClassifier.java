@@ -29,6 +29,7 @@ import org.apache.lucene.classification.utils.NearestFuzzyQuery;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
@@ -107,9 +108,9 @@ public class KNearestFuzzyClassifier implements Classifier<BytesRef> {
     ClassificationResult<BytesRef> assignedClass = null;
     double maxscore = -Double.MAX_VALUE;
     for (ClassificationResult<BytesRef> cl : assignedClasses) {
-      if (cl.getScore() > maxscore) {
+      if (cl.score() > maxscore) {
         assignedClass = cl;
-        maxscore = cl.getScore();
+        maxscore = cl.score();
       }
     }
     return assignedClass;
@@ -158,9 +159,10 @@ public class KNearestFuzzyClassifier implements Classifier<BytesRef> {
     Map<BytesRef, Integer> classCounts = new HashMap<>();
     Map<BytesRef, Double> classBoosts =
         new HashMap<>(); // this is a boost based on class ranking positions in topDocs
-    float maxScore = topDocs.totalHits.value == 0 ? Float.NaN : topDocs.scoreDocs[0].score;
+    float maxScore = topDocs.totalHits.value() == 0 ? Float.NaN : topDocs.scoreDocs[0].score;
+    StoredFields storedFields = indexSearcher.storedFields();
     for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
-      IndexableField storableField = indexSearcher.doc(scoreDoc.doc).getField(classFieldName);
+      IndexableField storableField = storedFields.document(scoreDoc.doc).getField(classFieldName);
       if (storableField != null) {
         BytesRef cl = new BytesRef(storableField.stringValue());
         // update count
@@ -191,7 +193,7 @@ public class KNearestFuzzyClassifier implements Classifier<BytesRef> {
     if (sumdoc < k) {
       for (ClassificationResult<BytesRef> cr : temporaryList) {
         returnList.add(
-            new ClassificationResult<>(cr.getAssignedClass(), cr.getScore() * k / (double) sumdoc));
+            new ClassificationResult<>(cr.assignedClass(), cr.score() * k / (double) sumdoc));
       }
     } else {
       returnList = temporaryList;

@@ -307,7 +307,8 @@ public class TestMixedDocValuesUpdates extends LuceneTestCase {
             long bdvValue = TestBinaryDocValuesUpdates.getValue(bdv) * 2;
             //              if (ctrlValue != bdvValue) {
             //                System.out.println("seg=" + r + ", f=f" + i + ", doc=" + j + ",
-            // group=" + r.document(j).get("updKey") + ", ctrlValue=" + ctrlValue + ", bdvBytes=" +
+            // group=" + r.storedFields().document(j).get("updKey") + ", ctrlValue=" + ctrlValue +
+            // ", bdvBytes=" +
             // scratch);
             //              }
             assertEquals(ctrlValue, bdvValue);
@@ -475,7 +476,7 @@ public class TestMixedDocValuesUpdates extends LuceneTestCase {
     for (LeafReaderContext c : reader.leaves()) {
       TopDocs topDocs =
           new IndexSearcher(c.reader()).search(new TermQuery(new Term("id", "" + doc)), 10);
-      if (topDocs.totalHits.value == 1) {
+      if (topDocs.totalHits.value() == 1) {
         assertNull(numericIdValues);
         assertNull(binaryIdValues);
         numericIdValues = c.reader().getNumericDocValues("numericId");
@@ -483,7 +484,7 @@ public class TestMixedDocValuesUpdates extends LuceneTestCase {
         binaryIdValues = c.reader().getBinaryDocValues("binaryId");
         assertEquals(topDocs.scoreDocs[0].doc, binaryIdValues.advance(topDocs.scoreDocs[0].doc));
       } else {
-        assertEquals(0, topDocs.totalHits.value);
+        assertEquals(0, topDocs.totalHits.value());
       }
     }
 
@@ -563,7 +564,7 @@ public class TestMixedDocValuesUpdates extends LuceneTestCase {
           Long value = values[i];
           TopDocs topDocs =
               new IndexSearcher(reader).search(new TermQuery(new Term("id", "" + i)), 10);
-          assertEquals(topDocs.totalHits.value, 1);
+          assertEquals(topDocs.totalHits.value(), 1);
           int docID = topDocs.scoreDocs[0].doc;
           List<LeafReaderContext> leaves = reader.leaves();
           int subIndex = ReaderUtil.subIndex(docID, leaves);
@@ -590,7 +591,7 @@ public class TestMixedDocValuesUpdates extends LuceneTestCase {
     do { // retry if we just committing a merge
       try (DirectoryReader reader = DirectoryReader.open(writer)) {
         TopDocs topDocs = new IndexSearcher(reader).search(new TermQuery(doc), 10);
-        assertEquals(1, topDocs.totalHits.value);
+        assertEquals(1, topDocs.totalHits.value());
         int theDoc = topDocs.scoreDocs[0].doc;
         seqId = writer.tryUpdateDocValue(reader, theDoc, fields);
       }
@@ -675,9 +676,10 @@ public class TestMixedDocValuesUpdates extends LuceneTestCase {
       IndexSearcher searcher = new IndexSearcher(reader);
 
       TopDocs is_live = searcher.search(new FieldExistsQuery("is_live"), 5);
-      assertEquals(numHits, is_live.totalHits.value);
+      assertEquals(numHits, is_live.totalHits.value());
+      StoredFields storedFields = reader.storedFields();
       for (ScoreDoc doc : is_live.scoreDocs) {
-        int id = Integer.parseInt(reader.document(doc.doc).get("id"));
+        int id = Integer.parseInt(storedFields.document(doc.doc).get("id"));
         int i = ReaderUtil.subIndex(doc.doc, reader.leaves());
         assertTrue(i >= 0);
         LeafReaderContext leafReaderContext = reader.leaves().get(i);

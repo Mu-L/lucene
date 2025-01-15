@@ -36,6 +36,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * Regular Expression extension to <code>Automaton</code>.
@@ -366,7 +368,7 @@ public class RegExp {
     REGEXP_REPEAT_MIN,
     /** An expression that repeats a minimum and maximum number of times */
     REGEXP_REPEAT_MINMAX,
-    /** The complement of an expression */
+    /** The complement of a character class */
     REGEXP_COMPLEMENT,
     /** A Character */
     REGEXP_CHAR,
@@ -385,7 +387,14 @@ public class RegExp {
     /** An Interval expression */
     REGEXP_INTERVAL,
     /** An expression for a pre-defined class e.g. \w */
-    REGEXP_PRE_CLASS
+    REGEXP_PRE_CLASS,
+    /**
+     * The complement of an expression.
+     *
+     * @deprecated Will be removed in Lucene 11
+     */
+    @Deprecated
+    REGEXP_DEPRECATED_COMPLEMENT
   }
 
   // -----  Syntax flags ( <= 0xff )  ------
@@ -410,22 +419,39 @@ public class RegExp {
   /** Syntax flag, enables no optional regexp syntax. */
   public static final int NONE = 0x0000;
 
-  // -----  Matching flags ( > 0xff )  ------
+  // -----  Matching flags ( > 0xff <= 0xffff )  ------
 
   /** Allows case insensitive matching of ASCII characters. */
   public static final int ASCII_CASE_INSENSITIVE = 0x0100;
 
+  // -----  Deprecated flags ( > 0xffff )  ------
+
+  /**
+   * Allows regexp parsing of the complement (<code>~</code>).
+   *
+   * <p>Note that processing the complement can require exponential time, but will be bounded by an
+   * internal limit. Regexes exceeding the limit will fail with TooComplexToDeterminizeException.
+   *
+   * @deprecated This method will be removed in Lucene 11
+   */
+  @Deprecated public static final int DEPRECATED_COMPLEMENT = 0x10000;
+
   // Immutable parsed state
   /** The type of expression */
   public final Kind kind;
+
   /** Child expressions held by a container type expression */
   public final RegExp exp1, exp2;
+
   /** String expression */
   public final String s;
+
   /** Character expression */
   public final int c;
+
   /** Limits for repeatable type expressions */
   public final int min, max, digits;
+
   /** Extents for range type expressions */
   public final int from, to;
 
@@ -454,6 +480,7 @@ public class RegExp {
   public RegExp(String s, int syntax_flags) throws IllegalArgumentException {
     this(s, syntax_flags, 0);
   }
+
   /**
    * Constructs new <code>RegExp</code> from a string.
    *
@@ -463,7 +490,7 @@ public class RegExp {
    * @exception IllegalArgumentException if an error occurred while parsing the regular expression
    */
   public RegExp(String s, int syntax_flags, int match_flags) throws IllegalArgumentException {
-    if (syntax_flags > ALL) {
+    if ((syntax_flags & ~DEPRECATED_COMPLEMENT) > ALL) {
       throw new IllegalArgumentException("Illegal syntax flag");
     }
 
@@ -613,6 +640,12 @@ public class RegExp {
         a = exp1.toAutomaton(automata, automaton_provider);
         a = Operations.complement(a, Integer.MAX_VALUE);
         break;
+      case REGEXP_DEPRECATED_COMPLEMENT:
+        // to ease transitions for users only, support arbitrary complement
+        // but bounded by DEFAULT_DETERMINIZE_WORK_LIMIT: must not be configurable.
+        a = exp1.toAutomaton(automata, automaton_provider);
+        a = Operations.complement(a, Operations.DEFAULT_DETERMINIZE_WORK_LIMIT);
+        break;
       case REGEXP_CHAR:
         if (check(ASCII_CASE_INSENSITIVE)) {
           a = toCaseInsensitiveChar(c);
@@ -760,6 +793,7 @@ public class RegExp {
         b.append("){").append(min).append(",").append(max).append("}");
         break;
       case REGEXP_COMPLEMENT:
+      case REGEXP_DEPRECATED_COMPLEMENT:
         b.append("~(");
         exp1.toStringBuilder(b);
         b.append(")");
@@ -809,7 +843,7 @@ public class RegExp {
 
   void toStringTree(StringBuilder b, String indent) {
     switch (kind) {
-        // binary
+      // binary
       case REGEXP_UNION:
       case REGEXP_CONCATENATION:
       case REGEXP_INTERSECTION:
@@ -819,10 +853,11 @@ public class RegExp {
         exp1.toStringTree(b, indent + "  ");
         exp2.toStringTree(b, indent + "  ");
         break;
-        // unary
+      // unary
       case REGEXP_OPTIONAL:
       case REGEXP_REPEAT:
       case REGEXP_COMPLEMENT:
+      case REGEXP_DEPRECATED_COMPLEMENT:
         b.append(indent);
         b.append(kind);
         b.append('\n');
@@ -927,6 +962,7 @@ public class RegExp {
       case REGEXP_REPEAT_MIN:
       case REGEXP_REPEAT_MINMAX:
       case REGEXP_COMPLEMENT:
+      case REGEXP_DEPRECATED_COMPLEMENT:
         exp1.getIdentifiers(set);
         break;
       case REGEXP_AUTOMATON:
@@ -1003,6 +1039,16 @@ public class RegExp {
     return newContainerNode(flags, Kind.REGEXP_COMPLEMENT, exp, null);
   }
 
+  /**
+   * Creates node that will compute complement of arbitrary expression.
+   *
+   * @deprecated Will be removed in Lucene 11
+   */
+  @Deprecated
+  static RegExp makeDeprecatedComplement(int flags, RegExp exp) {
+    return newContainerNode(flags, Kind.REGEXP_DEPRECATED_COMPLEMENT, exp, null);
+  }
+
   static RegExp makeChar(int flags, int c) {
     return newLeafNode(flags, Kind.REGEXP_CHAR, null, c, 0, 0, 0, 0, 0);
   }
@@ -1067,22 +1113,39 @@ public class RegExp {
   }
 
   final RegExp parseUnionExp() throws IllegalArgumentException {
-    RegExp e = parseInterExp();
-    if (match('|')) e = makeUnion(flags, e, parseUnionExp());
-    return e;
+    return iterativeParseExp(this::parseInterExp, () -> match('|'), RegExp::makeUnion);
   }
 
   final RegExp parseInterExp() throws IllegalArgumentException {
-    RegExp e = parseConcatExp();
-    if (check(INTERSECTION) && match('&')) e = makeIntersection(flags, e, parseInterExp());
-    return e;
+    return iterativeParseExp(
+        this::parseConcatExp, () -> check(INTERSECTION) && match('&'), RegExp::makeIntersection);
   }
 
   final RegExp parseConcatExp() throws IllegalArgumentException {
-    RegExp e = parseRepeatExp();
-    if (more() && !peek(")|") && (!check(INTERSECTION) || !peek("&")))
-      e = makeConcatenation(flags, e, parseConcatExp());
-    return e;
+    return iterativeParseExp(
+        this::parseRepeatExp,
+        () -> (more() && !peek(")|") && (!check(INTERSECTION) || !peek("&"))),
+        RegExp::makeConcatenation);
+  }
+
+  /**
+   * Custom Functional Interface for a Supplying methods with signature of RegExp(int int1, RegExp
+   * exp1, RegExp exp2)
+   */
+  @FunctionalInterface
+  private interface MakeRegexGroup {
+    RegExp get(int int1, RegExp exp1, RegExp exp2);
+  }
+
+  final RegExp iterativeParseExp(
+      Supplier<RegExp> gather, BooleanSupplier stop, MakeRegexGroup associativeReduce)
+      throws IllegalArgumentException {
+    RegExp result = gather.get();
+    while (stop.getAsBoolean() == true) {
+      RegExp e = gather.get();
+      result = associativeReduce.get(flags, result, e);
+    }
+    return result;
   }
 
   final RegExp parseRepeatExp() throws IllegalArgumentException {
@@ -1103,6 +1166,10 @@ public class RegExp {
           if (start != pos) m = Integer.parseInt(originalString.substring(start, pos));
         } else m = n;
         if (!match('}')) throw new IllegalArgumentException("expected '}' at position " + pos);
+        if (m != -1 && n > m) {
+          throw new IllegalArgumentException(
+              "invalid repetition range(out of order): " + n + ".." + m);
+        }
         if (m == -1) e = makeRepeat(flags, e, n);
         else e = makeRepeat(flags, e, n, m);
       }
@@ -1111,7 +1178,9 @@ public class RegExp {
   }
 
   final RegExp parseComplExp() throws IllegalArgumentException {
-    return parseCharClassExp();
+    if (check(DEPRECATED_COMPLEMENT) && match('~'))
+      return makeDeprecatedComplement(flags, parseComplExp());
+    else return parseCharClassExp();
   }
 
   final RegExp parseCharClassExp() throws IllegalArgumentException {
@@ -1216,7 +1285,7 @@ public class RegExp {
           if (i == 0 || i == s.length() - 1 || i != s.lastIndexOf('-'))
             throw new NumberFormatException();
           String smin = s.substring(0, i);
-          String smax = s.substring(i + 1, s.length());
+          String smax = s.substring(i + 1);
           int imin = Integer.parseInt(smin);
           int imax = Integer.parseInt(smax);
           int digits;

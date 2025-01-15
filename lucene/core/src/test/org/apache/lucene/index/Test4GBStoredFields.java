@@ -38,8 +38,6 @@ import org.apache.lucene.util.BytesRef;
 public class Test4GBStoredFields extends LuceneTestCase {
 
   public void test() throws Exception {
-    assumeWorkingMMapOnWindows();
-
     MockDirectoryWrapper dir =
         new MockDirectoryWrapper(random(), new MMapDirectory(createTempDir("4GBStoredFields")));
     dir.setThrottling(MockDirectoryWrapper.Throttling.NEVER);
@@ -106,7 +104,7 @@ public class Test4GBStoredFields extends LuceneTestCase {
     }
 
     DirectoryReader rd = DirectoryReader.open(dir);
-    Document sd = rd.document(numDocs - 1);
+    Document sd = rd.storedFields().document(numDocs - 1);
     assertNotNull(sd);
     assertEquals(1, sd.getFields().size());
     BytesRef valueRef = sd.getBinaryValue("fld");

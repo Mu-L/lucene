@@ -24,7 +24,7 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.FieldType;
-import org.apache.lucene.document.KnnVectorField;
+import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedDocValuesField;
@@ -69,7 +69,7 @@ public class TestAllFilesDetectMismatchedChecksum extends LuceneTestCase {
     doc.add(pointNumber);
     Field dvNumber = new NumericDocValuesField("long", 0L);
     doc.add(dvNumber);
-    KnnVectorField vector = new KnnVectorField("vector", new float[16]);
+    KnnFloatVectorField vector = new KnnFloatVectorField("vector", new float[16]);
     doc.add(vector);
 
     for (int i = 0; i < 100; i++) {
@@ -122,7 +122,7 @@ public class TestAllFilesDetectMismatchedChecksum extends LuceneTestCase {
           dirCopy.copyFrom(dir, name, name, IOContext.DEFAULT);
         } else {
           try (IndexOutput out = dirCopy.createOutput(name, IOContext.DEFAULT);
-              IndexInput in = dir.openInput(name, IOContext.DEFAULT)) {
+              IndexInput in = dir.openInput(name, IOContext.READONCE)) {
             out.copyBytes(in, flipOffset);
             out.writeByte((byte) (in.readByte() + TestUtil.nextInt(random(), 0x01, 0xFF)));
             out.copyBytes(in, victimLength - flipOffset - 1);

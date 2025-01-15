@@ -93,7 +93,7 @@ public class TestAutomatonQueryUnicode extends LuceneTestCase {
   }
 
   private long automatonQueryNrHits(AutomatonQuery query) throws IOException {
-    return searcher.search(query, 5).totalHits.value;
+    return searcher.search(query, 5).totalHits.value();
   }
 
   private void assertAutomatonHits(int expected, Automaton automaton) throws IOException {
@@ -107,6 +107,14 @@ public class TestAutomatonQueryUnicode extends LuceneTestCase {
         automatonQueryNrHits(
             new AutomatonQuery(
                 newTerm("bogus"), automaton, false, MultiTermQuery.CONSTANT_SCORE_REWRITE)));
+    assertEquals(
+        expected,
+        automatonQueryNrHits(
+            new AutomatonQuery(
+                newTerm("bogus"),
+                automaton,
+                false,
+                MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE)));
     assertEquals(
         expected,
         automatonQueryNrHits(

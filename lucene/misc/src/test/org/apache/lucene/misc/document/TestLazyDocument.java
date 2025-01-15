@@ -93,7 +93,7 @@ public class TestLazyDocument extends LuceneTestCase {
       assertEquals("Too many docs", 1, hits.length);
       LazyTestingStoredFieldVisitor visitor =
           new LazyTestingStoredFieldVisitor(new LazyDocument(reader, hits[0].doc), FIELDS);
-      reader.document(hits[0].doc, visitor);
+      reader.storedFields().document(hits[0].doc, visitor);
       Document d = visitor.doc;
 
       int numFieldValues = 0;
@@ -154,7 +154,7 @@ public class TestLazyDocument extends LuceneTestCase {
       // use the same LazyDoc to ask for one more lazy field
       visitor =
           new LazyTestingStoredFieldVisitor(new LazyDocument(reader, hits[0].doc), "load_later");
-      reader.document(hits[0].doc, visitor);
+      reader.storedFields().document(hits[0].doc, visitor);
       d = visitor.doc;
 
       // ensure we have all the values we expect now, and that
@@ -210,7 +210,7 @@ public class TestLazyDocument extends LuceneTestCase {
     @Override
     public void stringField(FieldInfo fieldInfo, String value) throws IOException {
       final FieldType ft = new FieldType(TextField.TYPE_STORED);
-      ft.setStoreTermVectors(fieldInfo.hasVectors());
+      ft.setStoreTermVectors(fieldInfo.hasTermVectors());
       ft.setOmitNorms(fieldInfo.omitsNorms());
       ft.setIndexOptions(fieldInfo.getIndexOptions());
       Objects.requireNonNull(value, "String value should not be null");

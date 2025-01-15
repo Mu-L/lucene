@@ -90,6 +90,12 @@ public abstract class LogMergePolicy extends MergePolicy {
   /** If true, we pro-rate a segment's size by the percentage of non-deleted documents. */
   protected boolean calibrateSizeByDeletes = true;
 
+  /**
+   * Target search concurrency. This merge policy will avoid creating segments that have more than
+   * {@code maxDoc / targetSearchConcurrency} documents.
+   */
+  protected int targetSearchConcurrency = 1;
+
   /** Sole constructor. (For invocation by subclass constructors, typically implicit.) */
   public LogMergePolicy() {
     super(DEFAULT_NO_CFS_RATIO, MergePolicy.DEFAULT_MAX_CFS_SEGMENT_SIZE);
@@ -129,6 +135,28 @@ public abstract class LogMergePolicy extends MergePolicy {
    */
   public boolean getCalibrateSizeByDeletes() {
     return calibrateSizeByDeletes;
+  }
+
+  /**
+   * Sets the target search concurrency. This prevents creating segments that are bigger than
+   * maxDoc/targetSearchConcurrency, which in turn makes the work parallelizable into
+   * targetSearchConcurrency slices of similar doc counts.
+   *
+   * <p><b>NOTE:</b> Configuring a value greater than 1 will increase the number of segments in the
+   * index linearly with the value of {@code targetSearchConcurrency} and also increase write
+   * amplification.
+   */
+  public void setTargetSearchConcurrency(int targetSearchConcurrency) {
+    if (targetSearchConcurrency < 1) {
+      throw new IllegalArgumentException(
+          "targetSearchConcurrency must be >= 1 (got " + targetSearchConcurrency + ")");
+    }
+    this.targetSearchConcurrency = targetSearchConcurrency;
+  }
+
+  /** Returns the target search concurrency. */
+  public int getTargetSearchConcurrency() {
+    return targetSearchConcurrency;
   }
 
   /**
@@ -446,14 +474,8 @@ public abstract class LogMergePolicy extends MergePolicy {
     return spec;
   }
 
-  private static class SegmentInfoAndLevel implements Comparable<SegmentInfoAndLevel> {
-    final SegmentCommitInfo info;
-    final float level;
-
-    public SegmentInfoAndLevel(SegmentCommitInfo info, float level) {
-      this.info = info;
-      this.level = level;
-    }
+  private record SegmentInfoAndLevel(SegmentCommitInfo info, float level)
+      implements Comparable<SegmentInfoAndLevel> {
 
     // Sorts largest to smallest
     @Override
@@ -484,8 +506,10 @@ public abstract class LogMergePolicy extends MergePolicy {
 
     final Set<SegmentCommitInfo> mergingSegments = mergeContext.getMergingSegments();
 
+    int totalDocCount = 0;
     for (int i = 0; i < numSegments; i++) {
       final SegmentCommitInfo info = infos.info(i);
+      totalDocCount += sizeDocs(info, mergeContext);
       long size = size(info, mergeContext);
 
       // Floor tiny segments
@@ -494,7 +518,7 @@ public abstract class LogMergePolicy extends MergePolicy {
       }
 
       final SegmentInfoAndLevel infoLevel =
-          new SegmentInfoAndLevel(info, (float) Math.log(size) / norm);
+          new SegmentInfoAndLevel(info, (float) Math.log((double) size) / norm);
       levels.add(infoLevel);
 
       if (verbose(mergeContext)) {
@@ -517,7 +541,7 @@ public abstract class LogMergePolicy extends MergePolicy {
 
     final float levelFloor;
     if (minMergeSize <= 0) levelFloor = (float) 0.0;
-    else levelFloor = (float) (Math.log(minMergeSize) / norm);
+    else levelFloor = (float) (Math.log((double) minMergeSize) / norm);
 
     // Now, we quantize the log values into levels.  The
     // first level is any segment whose log size is within
@@ -554,11 +578,6 @@ public abstract class LogMergePolicy extends MergePolicy {
         // With a merge factor of 10, this means that the biggest segment and the smallest segment
         // that take part of a merge have a size difference of at most 5.6x.
         levelBottom = (float) (maxLevel - LEVEL_LOG_SPAN);
-
-        // Force a boundary at the level floor
-        if (levelBottom < levelFloor && maxLevel >= levelFloor) {
-          levelBottom = levelFloor;
-        }
       } else {
         // For segments below the floor size, we allow more unbalanced merges, but still somewhat
         // balanced to avoid running into O(n^2) merging.
@@ -579,6 +598,9 @@ public abstract class LogMergePolicy extends MergePolicy {
             "  level " + levelBottom + " to " + maxLevel + ": " + (1 + upto - start) + " segments",
             mergeContext);
       }
+
+      final int maxMergeDocs =
+          Math.min(this.maxMergeDocs, Math.ceilDiv(totalDocCount, targetSearchConcurrency));
 
       // Finally, record all merges that are viable at this level:
       int end = start + mergeFactor;

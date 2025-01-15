@@ -16,9 +16,7 @@
  */
 
 /** Faceted indexing and search capabilities */
-@SuppressWarnings({"requires-automatic"})
 module org.apache.lucene.facet {
-  requires com.carrotsearch.hppc;
   requires org.apache.lucene.core;
 
   exports org.apache.lucene.facet;
@@ -28,4 +26,5 @@ module org.apache.lucene.facet {
   exports org.apache.lucene.facet.taxonomy.directory;
   exports org.apache.lucene.facet.taxonomy.writercache;
   exports org.apache.lucene.facet.facetset;
+  exports org.apache.lucene.facet.rangeonrange;
 }

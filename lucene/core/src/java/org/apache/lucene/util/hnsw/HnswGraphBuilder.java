@@ -18,29 +18,39 @@
 package org.apache.lucene.util.hnsw;
 
 import static java.lang.Math.log;
+import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 import java.io.IOException;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.SplittableRandom;
 import java.util.concurrent.TimeUnit;
-import org.apache.lucene.index.RandomAccessVectorValues;
-import org.apache.lucene.index.VectorEncoding;
-import org.apache.lucene.index.VectorSimilarityFunction;
-import org.apache.lucene.util.BytesRef;
+import java.util.concurrent.locks.Lock;
+import org.apache.lucene.search.KnnCollector;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.InfoStream;
+import org.apache.lucene.util.hnsw.HnswUtil.Component;
 
 /**
  * Builder for HNSW graph. See {@link HnswGraph} for a gloss on the algorithm and the meaning of the
- * hyperparameters.
- *
- * @param <T> the type of vector
+ * hyper-parameters.
  */
-public final class HnswGraphBuilder<T> {
+public class HnswGraphBuilder implements HnswBuilder {
+
+  /** Default number of maximum connections per node */
+  public static final int DEFAULT_MAX_CONN = 16;
+
+  /**
+   * Default number of the size of the queue maintained while searching during a graph construction.
+   */
+  public static final int DEFAULT_BEAM_WIDTH = 100;
 
   /** Default random seed for level generation * */
   private static final long DEFAULT_RAND_SEED = 42;
+
   /** A name for the HNSW component for the info-stream * */
   public static final String HNSW_COMPONENT = "HNSW";
 
@@ -48,158 +58,242 @@ public final class HnswGraphBuilder<T> {
   public static long randSeed = DEFAULT_RAND_SEED;
 
   private final int M; // max number of connections on upper layers
-  private final int beamWidth;
   private final double ml;
-  private final NeighborArray scratch;
 
-  private final VectorSimilarityFunction similarityFunction;
-  private final VectorEncoding vectorEncoding;
-  private final RandomAccessVectorValues vectors;
   private final SplittableRandom random;
-  private final HnswGraphSearcher<T> graphSearcher;
+  private final RandomVectorScorerSupplier scorerSupplier;
+  private final HnswGraphSearcher graphSearcher;
+  private final GraphBuilderKnnCollector entryCandidates; // for upper levels of graph search
+  private final GraphBuilderKnnCollector
+      beamCandidates; // for levels of graph where we add the node
 
-  final OnHeapHnswGraph hnsw;
+  protected final OnHeapHnswGraph hnsw;
+  protected final HnswLock hnswLock;
 
   private InfoStream infoStream = InfoStream.getDefault();
+  private boolean frozen;
 
-  // we need two sources of vectors in order to perform diversity check comparisons without
-  // colliding
-  private final RandomAccessVectorValues vectorsCopy;
-
-  public static HnswGraphBuilder<?> create(
-      RandomAccessVectorValues vectors,
-      VectorEncoding vectorEncoding,
-      VectorSimilarityFunction similarityFunction,
-      int M,
-      int beamWidth,
-      long seed)
+  public static HnswGraphBuilder create(
+      RandomVectorScorerSupplier scorerSupplier, int M, int beamWidth, long seed)
       throws IOException {
-    return new HnswGraphBuilder<>(vectors, vectorEncoding, similarityFunction, M, beamWidth, seed);
+    return new HnswGraphBuilder(scorerSupplier, M, beamWidth, seed, -1);
+  }
+
+  public static HnswGraphBuilder create(
+      RandomVectorScorerSupplier scorerSupplier, int M, int beamWidth, long seed, int graphSize)
+      throws IOException {
+    return new HnswGraphBuilder(scorerSupplier, M, beamWidth, seed, graphSize);
   }
 
   /**
-   * Reads all the vectors from a VectorValues, builds a graph connecting them by their dense
+   * Reads all the vectors from vector values, builds a graph connecting them by their dense
    * ordinals, using the given hyperparameter settings, and returns the resulting graph.
    *
-   * @param vectors the vectors whose relations are represented by the graph - must provide a
-   *     different view over those vectors than the one used to add via addGraphNode.
+   * @param scorerSupplier a supplier to create vector scorer from ordinals.
    * @param M – graph fanout parameter used to calculate the maximum number of connections a node
    *     can have – M on upper layers, and M * 2 on the lowest level.
    * @param beamWidth the size of the beam search to use when finding nearest neighbors.
    * @param seed the seed for a random number generator used during graph construction. Provide this
    *     to ensure repeatable construction.
+   * @param graphSize size of graph, if unknown, pass in -1
    */
-  private HnswGraphBuilder(
-      RandomAccessVectorValues vectors,
-      VectorEncoding vectorEncoding,
-      VectorSimilarityFunction similarityFunction,
-      int M,
-      int beamWidth,
-      long seed)
+  protected HnswGraphBuilder(
+      RandomVectorScorerSupplier scorerSupplier, int M, int beamWidth, long seed, int graphSize)
       throws IOException {
-    this.vectors = vectors;
-    this.vectorsCopy = vectors.copy();
-    this.vectorEncoding = Objects.requireNonNull(vectorEncoding);
-    this.similarityFunction = Objects.requireNonNull(similarityFunction);
-    if (M <= 0) {
-      throw new IllegalArgumentException("maxConn must be positive");
+    this(scorerSupplier, beamWidth, seed, new OnHeapHnswGraph(M, graphSize));
+  }
+
+  protected HnswGraphBuilder(
+      RandomVectorScorerSupplier scorerSupplier, int beamWidth, long seed, OnHeapHnswGraph hnsw)
+      throws IOException {
+    this(
+        scorerSupplier,
+        beamWidth,
+        seed,
+        hnsw,
+        null,
+        new HnswGraphSearcher(new NeighborQueue(beamWidth, true), new FixedBitSet(hnsw.size())));
+  }
+
+  /**
+   * Reads all the vectors from vector values, builds a graph connecting them by their dense
+   * ordinals, using the given hyperparameter settings, and returns the resulting graph.
+   *
+   * @param scorerSupplier a supplier to create vector scorer from ordinals.
+   * @param beamWidth the size of the beam search to use when finding nearest neighbors.
+   * @param seed the seed for a random number generator used during graph construction. Provide this
+   *     to ensure repeatable construction.
+   * @param hnsw the graph to build, can be previously initialized
+   */
+  protected HnswGraphBuilder(
+      RandomVectorScorerSupplier scorerSupplier,
+      int beamWidth,
+      long seed,
+      OnHeapHnswGraph hnsw,
+      HnswLock hnswLock,
+      HnswGraphSearcher graphSearcher)
+      throws IOException {
+    if (hnsw.maxConn() <= 0) {
+      throw new IllegalArgumentException("M (max connections) must be positive");
     }
     if (beamWidth <= 0) {
       throw new IllegalArgumentException("beamWidth must be positive");
     }
-    this.M = M;
-    this.beamWidth = beamWidth;
+    this.M = hnsw.maxConn();
+    this.scorerSupplier =
+        Objects.requireNonNull(scorerSupplier, "scorer supplier must not be null");
     // normalization factor for level generation; currently not configurable
     this.ml = M == 1 ? 1 : 1 / Math.log(1.0 * M);
     this.random = new SplittableRandom(seed);
-    int levelOfFirstNode = getRandomGraphLevel(ml, random);
-    this.hnsw = new OnHeapHnswGraph(M, levelOfFirstNode);
-    this.graphSearcher =
-        new HnswGraphSearcher<>(
-            vectorEncoding,
-            similarityFunction,
-            new NeighborQueue(beamWidth, true),
-            new FixedBitSet(this.vectors.size()));
-    // in scratch we store candidates in reverse order: worse candidates are first
-    scratch = new NeighborArray(Math.max(beamWidth, M + 1), false);
+    this.hnsw = hnsw;
+    this.hnswLock = hnswLock;
+    this.graphSearcher = graphSearcher;
+    entryCandidates = new GraphBuilderKnnCollector(1);
+    beamCandidates = new GraphBuilderKnnCollector(beamWidth);
   }
 
-  /**
-   * Reads all the vectors from two copies of a random access VectorValues. Providing two copies
-   * enables efficient retrieval without extra data copying, while avoiding collision of the
-   * returned values.
-   *
-   * @param vectorsToAdd the vectors for which to build a nearest neighbors graph. Must be an
-   *     independent accessor for the vectors
-   */
-  public OnHeapHnswGraph build(RandomAccessVectorValues vectorsToAdd) throws IOException {
-    if (vectorsToAdd == this.vectors) {
-      throw new IllegalArgumentException(
-          "Vectors to build must be independent of the source of vectors provided to HnswGraphBuilder()");
+  @Override
+  public OnHeapHnswGraph build(int maxOrd) throws IOException {
+    if (frozen) {
+      throw new IllegalStateException("This HnswGraphBuilder is frozen and cannot be updated");
     }
     if (infoStream.isEnabled(HNSW_COMPONENT)) {
-      infoStream.message(HNSW_COMPONENT, "build graph from " + vectorsToAdd.size() + " vectors");
+      infoStream.message(HNSW_COMPONENT, "build graph from " + maxOrd + " vectors");
     }
-    addVectors(vectorsToAdd);
+    addVectors(maxOrd);
+    return getCompletedGraph();
+  }
+
+  @Override
+  public void setInfoStream(InfoStream infoStream) {
+    this.infoStream = infoStream;
+  }
+
+  @Override
+  public OnHeapHnswGraph getCompletedGraph() throws IOException {
+    if (!frozen) {
+      finish();
+    }
+    return getGraph();
+  }
+
+  @Override
+  public OnHeapHnswGraph getGraph() {
     return hnsw;
   }
 
-  private void addVectors(RandomAccessVectorValues vectorsToAdd) throws IOException {
+  /** add vectors in range [minOrd, maxOrd) */
+  protected void addVectors(int minOrd, int maxOrd) throws IOException {
+    if (frozen) {
+      throw new IllegalStateException("This HnswGraphBuilder is frozen and cannot be updated");
+    }
     long start = System.nanoTime(), t = start;
-    // start at node 1! node 0 is added implicitly, in the constructor
-    for (int node = 1; node < vectorsToAdd.size(); node++) {
-      addGraphNode(node, vectorsToAdd);
+    if (infoStream.isEnabled(HNSW_COMPONENT)) {
+      infoStream.message(HNSW_COMPONENT, "addVectors [" + minOrd + " " + maxOrd + ")");
+    }
+    for (int node = minOrd; node < maxOrd; node++) {
+      addGraphNode(node);
       if ((node % 10000 == 0) && infoStream.isEnabled(HNSW_COMPONENT)) {
         t = printGraphBuildStatus(node, start, t);
       }
     }
   }
 
-  /** Set info-stream to output debugging information * */
-  public void setInfoStream(InfoStream infoStream) {
-    this.infoStream = infoStream;
+  private void addVectors(int maxOrd) throws IOException {
+    addVectors(0, maxOrd);
   }
 
-  public OnHeapHnswGraph getGraph() {
-    return hnsw;
-  }
-
-  /** Inserts a doc with vector value to the graph */
-  public void addGraphNode(int node, T value) throws IOException {
-    NeighborQueue candidates;
+  @Override
+  public void addGraphNode(int node) throws IOException {
+    /*
+    Note: this implementation is thread safe when graph size is fixed (e.g. when merging)
+    The process of adding a node is roughly:
+    1. Add the node to all level from top to the bottom, but do not connect it to any other node,
+       nor try to promote itself to an entry node before the connection is done. (Unless the graph is empty
+       and this is the first node, in that case we set the entry node and return)
+    2. Do the search from top to bottom, remember all the possible neighbours on each level the node
+       is on.
+    3. Add the neighbor to the node from bottom to top level, when adding the neighbour,
+       we always add all the outgoing links first before adding incoming link such that
+       when a search visits this node, it can always find a way out
+    4. If the node has level that is less or equal to graph level, then we're done here.
+       If the node has level larger than graph level, then we need to promote the node
+       as the entry node. If, while we add the node to the graph, the entry node has changed
+       (which means the graph level has changed as well), we need to reinsert the node
+       to the newly introduced levels (repeating step 2,3 for new levels) and again try to
+       promote the node to entry node.
+    */
+    if (frozen) {
+      throw new IllegalStateException("Graph builder is already frozen");
+    }
+    RandomVectorScorer scorer = scorerSupplier.scorer(node);
     final int nodeLevel = getRandomGraphLevel(ml, random);
-    int curMaxLevel = hnsw.numLevels() - 1;
-    int[] eps = new int[] {hnsw.entryNode()};
-
-    // if a node introduces new levels to the graph, add this new node on new levels
-    for (int level = nodeLevel; level > curMaxLevel; level--) {
+    // first add nodes to all levels
+    for (int level = nodeLevel; level >= 0; level--) {
       hnsw.addNode(level, node);
     }
-
-    // for levels > nodeLevel search with topk = 1
-    for (int level = curMaxLevel; level > nodeLevel; level--) {
-      candidates = graphSearcher.searchLevel(value, 1, level, eps, vectors, hnsw);
-      eps = new int[] {candidates.pop()};
+    // then promote itself as entry node if entry node is not set
+    if (hnsw.trySetNewEntryNode(node, nodeLevel)) {
+      return;
     }
-    // for levels <= nodeLevel search with topk = beamWidth, and add connections
-    for (int level = Math.min(nodeLevel, curMaxLevel); level >= 0; level--) {
-      candidates = graphSearcher.searchLevel(value, beamWidth, level, eps, vectors, hnsw);
-      eps = candidates.nodes();
-      hnsw.addNode(level, node);
-      addDiverseNeighbors(level, node, candidates);
-    }
-  }
+    // if the entry node is already set, then we have to do all connections first before we can
+    // promote ourselves as entry node
 
-  public void addGraphNode(int node, RandomAccessVectorValues values) throws IOException {
-    addGraphNode(node, getValue(node, values));
-  }
+    int lowestUnsetLevel = 0;
+    int curMaxLevel;
+    do {
+      curMaxLevel = hnsw.numLevels() - 1;
+      // NOTE: the entry node and max level may not be paired, but because we get the level first
+      // we ensure that the entry node we get later will always exist on the curMaxLevel
+      int[] eps = new int[] {hnsw.entryNode()};
 
-  @SuppressWarnings("unchecked")
-  private T getValue(int node, RandomAccessVectorValues values) throws IOException {
-    return switch (vectorEncoding) {
-      case BYTE -> (T) values.binaryValue(node);
-      case FLOAT32 -> (T) values.vectorValue(node);
-    };
+      // we first do the search from top to bottom
+      // for levels > nodeLevel search with topk = 1
+      GraphBuilderKnnCollector candidates = entryCandidates;
+      for (int level = curMaxLevel; level > nodeLevel; level--) {
+        candidates.clear();
+        graphSearcher.searchLevel(candidates, scorer, level, eps, hnsw, null);
+        eps[0] = candidates.popNode();
+      }
+
+      // for levels <= nodeLevel search with topk = beamWidth, and add connections
+      candidates = beamCandidates;
+      NeighborArray[] scratchPerLevel =
+          new NeighborArray[Math.min(nodeLevel, curMaxLevel) - lowestUnsetLevel + 1];
+      for (int i = scratchPerLevel.length - 1; i >= 0; i--) {
+        int level = i + lowestUnsetLevel;
+        candidates.clear();
+        graphSearcher.searchLevel(candidates, scorer, level, eps, hnsw, null);
+        eps = candidates.popUntilNearestKNodes();
+        scratchPerLevel[i] = new NeighborArray(Math.max(beamCandidates.k(), M + 1), false);
+        popToScratch(candidates, scratchPerLevel[i]);
+      }
+
+      // then do connections from bottom up
+      for (int i = 0; i < scratchPerLevel.length; i++) {
+        addDiverseNeighbors(i + lowestUnsetLevel, node, scratchPerLevel[i]);
+      }
+      lowestUnsetLevel += scratchPerLevel.length;
+      assert lowestUnsetLevel == Math.min(nodeLevel, curMaxLevel) + 1;
+      if (lowestUnsetLevel > nodeLevel) {
+        return;
+      }
+      assert lowestUnsetLevel == curMaxLevel + 1 && nodeLevel > curMaxLevel;
+      if (hnsw.tryPromoteNewEntryNode(node, nodeLevel, curMaxLevel)) {
+        return;
+      }
+      if (hnsw.numLevels() == curMaxLevel + 1) {
+        // This should never happen if all the calculations are correct
+        throw new IllegalStateException(
+            "We're not able to promote node "
+                + node
+                + " at level "
+                + nodeLevel
+                + " as entry node. But the max graph level "
+                + curMaxLevel
+                + " has not changed while we are inserting the node.");
+      }
+    } while (true);
   }
 
   private long printGraphBuildStatus(int node, long start, long t) {
@@ -215,7 +309,7 @@ public final class HnswGraphBuilder<T> {
     return now;
   }
 
-  private void addDiverseNeighbors(int level, int node, NeighborQueue candidates)
+  private void addDiverseNeighbors(int level, int node, NeighborArray candidates)
       throws IOException {
     /* For each of the beamWidth nearest candidates (going from best to worst), select it only if it
      * is closer to target than it is to any of the already-selected neighbors (ie selected in this method,
@@ -223,47 +317,66 @@ public final class HnswGraphBuilder<T> {
      */
     NeighborArray neighbors = hnsw.getNeighbors(level, node);
     assert neighbors.size() == 0; // new node
-    popToScratch(candidates);
     int maxConnOnLevel = level == 0 ? M * 2 : M;
-    selectAndLinkDiverse(neighbors, scratch, maxConnOnLevel);
+    boolean[] mask = selectAndLinkDiverse(neighbors, candidates, maxConnOnLevel);
 
     // Link the selected nodes to the new node, and the new node to the selected nodes (again
     // applying diversity heuristic)
-    int size = neighbors.size();
-    for (int i = 0; i < size; i++) {
-      int nbr = neighbors.node[i];
-      NeighborArray nbrNbr = hnsw.getNeighbors(level, nbr);
-      nbrNbr.insertSorted(node, neighbors.score[i]);
-      if (nbrNbr.size() > maxConnOnLevel) {
-        int indexToRemove = findWorstNonDiverse(nbrNbr);
-        nbrNbr.removeIndex(indexToRemove);
+    // NOTE: here we're using candidates and mask but not the neighbour array because once we have
+    // added incoming link there will be possibilities of this node being discovered and neighbour
+    // array being modified. So using local candidates and mask is a safer option.
+    for (int i = 0; i < candidates.size(); i++) {
+      if (mask[i] == false) {
+        continue;
+      }
+      int nbr = candidates.nodes()[i];
+      if (hnswLock != null) {
+        Lock lock = hnswLock.write(level, nbr);
+        try {
+          NeighborArray nbrsOfNbr = getGraph().getNeighbors(level, nbr);
+          nbrsOfNbr.addAndEnsureDiversity(node, candidates.scores()[i], nbr, scorerSupplier);
+        } finally {
+          lock.unlock();
+        }
+      } else {
+        NeighborArray nbrsOfNbr = hnsw.getNeighbors(level, nbr);
+        nbrsOfNbr.addAndEnsureDiversity(node, candidates.scores()[i], nbr, scorerSupplier);
       }
     }
   }
 
-  private void selectAndLinkDiverse(
+  /**
+   * This method will select neighbors to add and return a mask telling the caller which candidates
+   * are selected
+   */
+  private boolean[] selectAndLinkDiverse(
       NeighborArray neighbors, NeighborArray candidates, int maxConnOnLevel) throws IOException {
+    boolean[] mask = new boolean[candidates.size()];
     // Select the best maxConnOnLevel neighbors of the new node, applying the diversity heuristic
     for (int i = candidates.size() - 1; neighbors.size() < maxConnOnLevel && i >= 0; i--) {
       // compare each neighbor (in distance order) against the closer neighbors selected so far,
       // only adding it if it is closer to the target than to any of the other selected neighbors
-      int cNode = candidates.node[i];
-      float cScore = candidates.score[i];
-      assert cNode < hnsw.size();
+      int cNode = candidates.nodes()[i];
+      float cScore = candidates.scores()[i];
+      assert cNode <= hnsw.maxNodeId();
       if (diversityCheck(cNode, cScore, neighbors)) {
-        neighbors.add(cNode, cScore);
+        mask[i] = true;
+        // here we don't need to lock, because there's no incoming link so no others is able to
+        // discover this node such that no others will modify this neighbor array as well
+        neighbors.addInOrder(cNode, cScore);
       }
     }
+    return mask;
   }
 
-  private void popToScratch(NeighborQueue candidates) {
+  private static void popToScratch(GraphBuilderKnnCollector candidates, NeighborArray scratch) {
     scratch.clear();
     int candidateCount = candidates.size();
     // extract all the Neighbors from the queue into an array; these will now be
     // sorted from worst to best
     for (int i = 0; i < candidateCount; i++) {
-      float maxSimilarity = candidates.topScore();
-      scratch.add(candidates.pop(), maxSimilarity);
+      float maxSimilarity = candidates.minimumScore();
+      scratch.addInOrder(candidates.popNode(), maxSimilarity);
     }
   }
 
@@ -276,90 +389,14 @@ public final class HnswGraphBuilder<T> {
    */
   private boolean diversityCheck(int candidate, float score, NeighborArray neighbors)
       throws IOException {
-    return isDiverse(candidate, neighbors, score);
-  }
-
-  private boolean isDiverse(int candidate, NeighborArray neighbors, float score)
-      throws IOException {
-    return switch (vectorEncoding) {
-      case BYTE -> isDiverse(vectors.binaryValue(candidate), neighbors, score);
-      case FLOAT32 -> isDiverse(vectors.vectorValue(candidate), neighbors, score);
-    };
-  }
-
-  private boolean isDiverse(float[] candidate, NeighborArray neighbors, float score)
-      throws IOException {
+    RandomVectorScorer scorer = scorerSupplier.scorer(candidate);
     for (int i = 0; i < neighbors.size(); i++) {
-      float neighborSimilarity =
-          similarityFunction.compare(candidate, vectorsCopy.vectorValue(neighbors.node[i]));
+      float neighborSimilarity = scorer.score(neighbors.nodes()[i]);
       if (neighborSimilarity >= score) {
         return false;
       }
     }
     return true;
-  }
-
-  private boolean isDiverse(BytesRef candidate, NeighborArray neighbors, float score)
-      throws IOException {
-    for (int i = 0; i < neighbors.size(); i++) {
-      float neighborSimilarity =
-          similarityFunction.compare(candidate, vectorsCopy.binaryValue(neighbors.node[i]));
-      if (neighborSimilarity >= score) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /**
-   * Find first non-diverse neighbour among the list of neighbors starting from the most distant
-   * neighbours
-   */
-  private int findWorstNonDiverse(NeighborArray neighbors) throws IOException {
-    for (int i = neighbors.size() - 1; i > 0; i--) {
-      if (isWorstNonDiverse(i, neighbors)) {
-        return i;
-      }
-    }
-    return neighbors.size() - 1;
-  }
-
-  private boolean isWorstNonDiverse(int candidateIndex, NeighborArray neighbors)
-      throws IOException {
-    int candidateNode = neighbors.node[candidateIndex];
-    return switch (vectorEncoding) {
-      case BYTE -> isWorstNonDiverse(candidateIndex, vectors.binaryValue(candidateNode), neighbors);
-      case FLOAT32 -> isWorstNonDiverse(
-          candidateIndex, vectors.vectorValue(candidateNode), neighbors);
-    };
-  }
-
-  private boolean isWorstNonDiverse(
-      int candidateIndex, float[] candidateVector, NeighborArray neighbors) throws IOException {
-    float minAcceptedSimilarity = neighbors.score[candidateIndex];
-    for (int i = candidateIndex - 1; i >= 0; i--) {
-      float neighborSimilarity =
-          similarityFunction.compare(candidateVector, vectorsCopy.vectorValue(neighbors.node[i]));
-      // candidate node is too similar to node i given its score relative to the base node
-      if (neighborSimilarity >= minAcceptedSimilarity) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private boolean isWorstNonDiverse(
-      int candidateIndex, BytesRef candidateVector, NeighborArray neighbors) throws IOException {
-    float minAcceptedSimilarity = neighbors.score[candidateIndex];
-    for (int i = candidateIndex - 1; i >= 0; i--) {
-      float neighborSimilarity =
-          similarityFunction.compare(candidateVector, vectorsCopy.binaryValue(neighbors.node[i]));
-      // candidate node is too similar to node i given its score relative to the base node
-      if (neighborSimilarity >= minAcceptedSimilarity) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private static int getRandomGraphLevel(double ml, SplittableRandom random) {
@@ -368,5 +405,199 @@ public final class HnswGraphBuilder<T> {
       randDouble = random.nextDouble(); // avoid 0 value, as log(0) is undefined
     } while (randDouble == 0.0);
     return ((int) (-log(randDouble) * ml));
+  }
+
+  void finish() throws IOException {
+    // System.out.println("finish " + frozen);
+    connectComponents();
+    frozen = true;
+  }
+
+  private void connectComponents() throws IOException {
+    long start = System.nanoTime();
+    for (int level = 0; level < hnsw.numLevels(); level++) {
+      if (connectComponents(level) == false) {
+        if (infoStream.isEnabled(HNSW_COMPONENT)) {
+          infoStream.message(HNSW_COMPONENT, "connectComponents failed on level " + level);
+        }
+      }
+    }
+    if (infoStream.isEnabled(HNSW_COMPONENT)) {
+      infoStream.message(
+          HNSW_COMPONENT, "connectComponents " + (System.nanoTime() - start) / 1_000_000 + " ms");
+    }
+  }
+
+  private boolean connectComponents(int level) throws IOException {
+    FixedBitSet notFullyConnected = new FixedBitSet(hnsw.size());
+    int maxConn = M;
+    if (level == 0) {
+      maxConn *= 2;
+    }
+    List<Component> components = HnswUtil.components(hnsw, level, notFullyConnected, maxConn);
+    if (infoStream.isEnabled(HNSW_COMPONENT)) {
+      infoStream.message(
+          HNSW_COMPONENT, "connect " + components.size() + " components on level=" + level);
+    }
+    // System.out.println("HnswGraphBuilder. level=" + level + ": " + components);
+    boolean result = true;
+    if (components.size() > 1) {
+      // connect other components to the largest one
+      Component c0 = components.stream().max(Comparator.comparingInt(Component::size)).get();
+      if (c0.start() == NO_MORE_DOCS) {
+        // the component is already fully connected - no room for new connections
+        return false;
+      }
+      // try for more connections? We only do one since otherwise they may become full
+      // while linking
+      GraphBuilderKnnCollector beam = new GraphBuilderKnnCollector(2);
+      int[] eps = new int[1];
+      for (Component c : components) {
+        if (c != c0) {
+          if (c.start() == NO_MORE_DOCS) {
+            continue;
+          }
+          if (infoStream.isEnabled(HNSW_COMPONENT)) {
+            infoStream.message(HNSW_COMPONENT, "connect component " + c + " to " + c0);
+          }
+
+          beam.clear();
+          eps[0] = c0.start();
+          RandomVectorScorer scorer = scorerSupplier.scorer(c.start());
+          // find the closest node in the largest component to the lowest-numbered node in this
+          // component that has room to make a connection
+          graphSearcher.searchLevel(beam, scorer, level, eps, hnsw, notFullyConnected);
+          boolean linked = false;
+          while (beam.size() > 0) {
+            int c0node = beam.popNode();
+            if (c0node == c.start() || notFullyConnected.get(c0node) == false) {
+              continue;
+            }
+            float score = beam.minimumScore();
+            assert notFullyConnected.get(c0node);
+            // link the nodes
+            // System.out.println("link " + c0 + "." + c0node + " to " + c + "." + c.start());
+            link(level, c0node, c.start(), score, notFullyConnected);
+            linked = true;
+            if (infoStream.isEnabled(HNSW_COMPONENT)) {
+              infoStream.message(HNSW_COMPONENT, "connected ok " + c0node + " -> " + c.start());
+            }
+          }
+          if (!linked) {
+            if (infoStream.isEnabled(HNSW_COMPONENT)) {
+              infoStream.message(HNSW_COMPONENT, "not connected; no free nodes found");
+            }
+            result = false;
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  // Try to link two nodes bidirectionally; the forward connection will always be made.
+  // Update notFullyConnected.
+  private void link(int level, int n0, int n1, float score, FixedBitSet notFullyConnected) {
+    NeighborArray nbr0 = hnsw.getNeighbors(level, n0);
+    NeighborArray nbr1 = hnsw.getNeighbors(level, n1);
+    // must subtract 1 here since the nodes array is one larger than the configured
+    // max neighbors (M / 2M).
+    // We should have taken care of this check by searching for not-full nodes
+    int maxConn = nbr0.nodes().length - 1;
+    assert notFullyConnected.get(n0);
+    assert nbr0.size() < maxConn : "node " + n0 + " is full, has " + nbr0.size() + " friends";
+    nbr0.addOutOfOrder(n1, score);
+    if (nbr0.size() == maxConn) {
+      notFullyConnected.clear(n0);
+    }
+    if (nbr1.size() < maxConn) {
+      nbr1.addOutOfOrder(n0, score);
+      if (nbr1.size() == maxConn) {
+        notFullyConnected.clear(n1);
+      }
+    }
+  }
+
+  /**
+   * A restricted, specialized knnCollector that can be used when building a graph.
+   *
+   * <p>Does not support TopDocs
+   */
+  public static final class GraphBuilderKnnCollector implements KnnCollector {
+    private final NeighborQueue queue;
+    private final int k;
+    private long visitedCount;
+
+    /**
+     * @param k the number of neighbors to collect
+     */
+    public GraphBuilderKnnCollector(int k) {
+      this.queue = new NeighborQueue(k, false);
+      this.k = k;
+    }
+
+    public int size() {
+      return queue.size();
+    }
+
+    public int popNode() {
+      return queue.pop();
+    }
+
+    public int[] popUntilNearestKNodes() {
+      while (size() > k()) {
+        queue.pop();
+      }
+      return queue.nodes();
+    }
+
+    public float minimumScore() {
+      return queue.topScore();
+    }
+
+    public void clear() {
+      this.queue.clear();
+      this.visitedCount = 0;
+    }
+
+    @Override
+    public boolean earlyTerminated() {
+      return false;
+    }
+
+    @Override
+    public void incVisitedCount(int count) {
+      this.visitedCount += count;
+    }
+
+    @Override
+    public long visitedCount() {
+      return visitedCount;
+    }
+
+    @Override
+    public long visitLimit() {
+      return Long.MAX_VALUE;
+    }
+
+    @Override
+    public int k() {
+      return k;
+    }
+
+    @Override
+    public boolean collect(int docId, float similarity) {
+      return queue.insertWithOverflow(docId, similarity);
+    }
+
+    @Override
+    public float minCompetitiveSimilarity() {
+      return queue.size() >= k() ? queue.topScore() : Float.NEGATIVE_INFINITY;
+    }
+
+    @Override
+    public TopDocs topDocs() {
+      throw new IllegalArgumentException();
+    }
   }
 }

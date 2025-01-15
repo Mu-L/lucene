@@ -56,9 +56,9 @@ public class TestMatchAllDocsQuery extends LuceneTestCase {
 
     hits = is.search(new MatchAllDocsQuery(), 1000).scoreDocs;
     assertEquals(3, hits.length);
-    assertEquals("one", is.doc(hits[0].doc).get("key"));
-    assertEquals("two", is.doc(hits[1].doc).get("key"));
-    assertEquals("three four", is.doc(hits[2].doc).get("key"));
+    assertEquals("one", is.storedFields().document(hits[0].doc).get("key"));
+    assertEquals("two", is.storedFields().document(hits[1].doc).get("key"));
+    assertEquals("three four", is.storedFields().document(hits[2].doc).get("key"));
 
     // some artificial queries to trigger the use of skipTo():
 
@@ -117,17 +117,19 @@ public class TestMatchAllDocsQuery extends LuceneTestCase {
 
     IndexSearcher singleThreadedSearcher = newSearcher(ir, true, true, false);
     final int totalHitsThreshold = 200;
-    CollectorManager<TopScoreDocCollector, TopDocs> manager =
-        TopScoreDocCollector.createSharedManager(10, null, totalHitsThreshold);
-    TopDocs topDocs = singleThreadedSearcher.search(new MatchAllDocsQuery(), manager);
-    assertEquals(totalHitsThreshold + 1, topDocs.totalHits.value);
-    assertEquals(TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO, topDocs.totalHits.relation);
+    TopScoreDocCollectorManager collectorManager =
+        new TopScoreDocCollectorManager(10, totalHitsThreshold);
+
+    TopDocs topDocs = singleThreadedSearcher.search(new MatchAllDocsQuery(), collectorManager);
+    assertEquals(totalHitsThreshold + 1, topDocs.totalHits.value());
+    assertEquals(TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO, topDocs.totalHits.relation());
 
     IndexSearcher is = newSearcher(ir);
-    manager = TopScoreDocCollector.createSharedManager(10, null, numDocs);
-    topDocs = is.search(new MatchAllDocsQuery(), manager);
-    assertEquals(numDocs, topDocs.totalHits.value);
-    assertEquals(TotalHits.Relation.EQUAL_TO, topDocs.totalHits.relation);
+    collectorManager = new TopScoreDocCollectorManager(10, numDocs);
+
+    topDocs = is.search(new MatchAllDocsQuery(), collectorManager);
+    assertEquals(numDocs, topDocs.totalHits.value());
+    assertEquals(TotalHits.Relation.EQUAL_TO, topDocs.totalHits.relation());
 
     iw.close();
     ir.close();

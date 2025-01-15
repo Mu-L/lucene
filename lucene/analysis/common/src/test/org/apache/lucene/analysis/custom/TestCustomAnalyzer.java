@@ -49,7 +49,7 @@ import org.apache.lucene.util.Version;
 public class TestCustomAnalyzer extends BaseTokenStreamTestCase {
 
   @SuppressWarnings("deprecation")
-  private static final Version LUCENE_9_0_0 = Version.LUCENE_9_0_0;
+  private static final Version LUCENE_10_0_0 = Version.LUCENE_10_0_0;
 
   // Test some examples (TODO: we only check behavior, we may need something like
   // TestRandomChains...)
@@ -111,7 +111,7 @@ public class TestCustomAnalyzer extends BaseTokenStreamTestCase {
   public void testVersionAwareFilter() throws Exception {
     CustomAnalyzer a =
         CustomAnalyzer.builder()
-            .withDefaultMatchVersion(LUCENE_9_0_0)
+            .withDefaultMatchVersion(LUCENE_10_0_0)
             .withTokenizer(StandardTokenizerFactory.class)
             .addTokenFilter(DummyVersionAwareTokenFilterFactory.class)
             .build();
@@ -128,7 +128,7 @@ public class TestCustomAnalyzer extends BaseTokenStreamTestCase {
   public void testFactoryHtmlStripClassicFolding() throws Exception {
     CustomAnalyzer a =
         CustomAnalyzer.builder()
-            .withDefaultMatchVersion(LUCENE_9_0_0)
+            .withDefaultMatchVersion(LUCENE_10_0_0)
             .addCharFilter(HTMLStripCharFilterFactory.class)
             .withTokenizer(ClassicTokenizerFactory.class)
             .addTokenFilter(ASCIIFoldingFilterFactory.class, "preserveOriginal", "true")
@@ -164,7 +164,7 @@ public class TestCustomAnalyzer extends BaseTokenStreamTestCase {
   public void testHtmlStripClassicFolding() throws Exception {
     CustomAnalyzer a =
         CustomAnalyzer.builder()
-            .withDefaultMatchVersion(LUCENE_9_0_0)
+            .withDefaultMatchVersion(LUCENE_10_0_0)
             .addCharFilter("htmlstrip")
             .withTokenizer("classic")
             .addTokenFilter("asciifolding", "preserveOriginal", "true")
@@ -266,7 +266,13 @@ public class TestCustomAnalyzer extends BaseTokenStreamTestCase {
         CustomAnalyzer.builder(this.getDataPath(""))
             .withTokenizer("whitespace")
             .addTokenFilter(
-                "stop", "ignoreCase", "true", "words", "teststop.txt", "format", "wordset")
+                "stop",
+                "ignoreCase",
+                "true",
+                "words",
+                this.getDataPath("teststop.txt").toString(),
+                "format",
+                "wordset")
             .build();
     assertAnalyzesTo(a, "foo Foo Bar", new String[0]);
     a.close();
@@ -507,7 +513,7 @@ public class TestCustomAnalyzer extends BaseTokenStreamTestCase {
 
     @Override
     public TokenStream create(TokenStream input) {
-      if (luceneMatchVersion.equals(LUCENE_9_0_0)) {
+      if (luceneMatchVersion.equals(LUCENE_10_0_0)) {
         return input;
       }
       return new LowerCaseFilter(input);

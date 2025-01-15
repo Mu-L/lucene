@@ -23,7 +23,6 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute;
 import org.apache.lucene.index.IndexOptions;
-import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.TermStates;
 import org.apache.lucene.search.BooleanQuery;
@@ -106,11 +105,17 @@ import org.apache.lucene.search.similarities.Similarity.SimScorer;
 public final class FeatureField extends Field {
 
   private static final FieldType FIELD_TYPE = new FieldType();
+  private static final FieldType FIELD_TYPE_STORE_TERM_VECTORS = new FieldType();
 
   static {
     FIELD_TYPE.setTokenized(false);
     FIELD_TYPE.setOmitNorms(true);
     FIELD_TYPE.setIndexOptions(IndexOptions.DOCS_AND_FREQS);
+
+    FIELD_TYPE_STORE_TERM_VECTORS.setTokenized(false);
+    FIELD_TYPE_STORE_TERM_VECTORS.setOmitNorms(true);
+    FIELD_TYPE_STORE_TERM_VECTORS.setIndexOptions(IndexOptions.DOCS_AND_FREQS);
+    FIELD_TYPE_STORE_TERM_VECTORS.setStoreTermVectors(true);
   }
 
   private float featureValue;
@@ -124,7 +129,21 @@ public final class FeatureField extends Field {
    * @param featureValue The value of the feature, must be a positive, finite, normal float.
    */
   public FeatureField(String fieldName, String featureName, float featureValue) {
-    super(fieldName, featureName, FIELD_TYPE);
+    this(fieldName, featureName, featureValue, false);
+  }
+
+  /**
+   * Create a feature.
+   *
+   * @param fieldName The name of the field to store the information into. All features may be
+   *     stored in the same field.
+   * @param featureName The name of the feature, eg. 'pagerank`. It will be indexed as a term.
+   * @param featureValue The value of the feature, must be a positive, finite, normal float.
+   * @param storeTermVectors Whether term vectors should be stored.
+   */
+  public FeatureField(
+      String fieldName, String featureName, float featureValue, boolean storeTermVectors) {
+    super(fieldName, featureName, storeTermVectors ? FIELD_TYPE_STORE_TERM_VECTORS : FIELD_TYPE);
     setFeatureValue(featureValue);
   }
 
@@ -165,6 +184,16 @@ public final class FeatureField extends Field {
     int freqBits = Float.floatToIntBits(featureValue);
     stream.setValues((String) fieldsData, freqBits >>> 15);
     return stream;
+  }
+
+  /**
+   * This is useful if you have multiple features sharing a name and you want to take action to
+   * deduplicate them.
+   *
+   * @return the feature value of this field.
+   */
+  public float getFeatureValue() {
+    return featureValue;
   }
 
   private static final class FeatureTokenStream extends TokenStream {
@@ -273,7 +302,6 @@ public final class FeatureField extends Field {
       return true;
     }
   }
-  ;
 
   static final class LogFunction extends FeatureFunction {
 
@@ -345,7 +373,7 @@ public final class FeatureField extends Field {
       if (pivot != null) {
         return super.rewrite(indexSearcher);
       }
-      float newPivot = computePivotFeatureValue(indexSearcher.getIndexReader(), field, feature);
+      float newPivot = computePivotFeatureValue(indexSearcher, field, feature);
       return new SaturationFunction(field, feature, newPivot);
     }
 
@@ -467,7 +495,7 @@ public final class FeatureField extends Field {
           Explanation.match(
               pivot, "k, pivot feature value that would give a score contribution equal to w/2"),
           Explanation.match(
-              pivot,
+              a,
               "a, exponent, higher values make the function grow slower before k and faster after k"),
           Explanation.match(featureValue, "S, feature value"));
     }
@@ -618,14 +646,14 @@ public final class FeatureField extends Field {
    * store the exponent in the higher bits, it means that the result will be an approximation of the
    * geometric mean of all feature values.
    *
-   * @param reader the {@link IndexReader} to search against
+   * @param searcher the {@link IndexSearcher} to perform the search
    * @param featureField the field that stores features
    * @param featureName the name of the feature
    */
-  static float computePivotFeatureValue(IndexReader reader, String featureField, String featureName)
-      throws IOException {
+  static float computePivotFeatureValue(
+      IndexSearcher searcher, String featureField, String featureName) throws IOException {
     Term term = new Term(featureField, featureName);
-    TermStates states = TermStates.build(reader.getContext(), term, true);
+    TermStates states = TermStates.build(searcher, term, true);
     if (states.docFreq() == 0) {
       // avoid division by 0
       // The return value doesn't matter much here, the term doesn't exist,

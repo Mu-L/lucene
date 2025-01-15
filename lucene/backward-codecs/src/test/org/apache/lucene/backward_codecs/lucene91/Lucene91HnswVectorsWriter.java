@@ -17,26 +17,25 @@
 
 package org.apache.lucene.backward_codecs.lucene91;
 
-import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
-
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
+import org.apache.lucene.codecs.BufferingKnnVectorsWriter;
 import org.apache.lucene.codecs.CodecUtil;
-import org.apache.lucene.codecs.KnnVectorsReader;
-import org.apache.lucene.index.BufferingKnnVectorsWriter;
+import org.apache.lucene.index.ByteVectorValues;
 import org.apache.lucene.index.DocsWithFieldSet;
 import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexFileNames;
-import org.apache.lucene.index.RandomAccessVectorValues;
+import org.apache.lucene.index.KnnVectorValues;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.VectorSimilarityFunction;
-import org.apache.lucene.index.VectorValues;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
-import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
-import org.apache.lucene.util.hnsw.HnswGraph.NodesIterator;
+import org.apache.lucene.util.hnsw.HnswGraph;
 
 /**
  * Writes vector values and knn graphs to index segments.
@@ -108,10 +107,9 @@ public final class Lucene91HnswVectorsWriter extends BufferingKnnVectorsWriter {
   }
 
   @Override
-  public void writeField(FieldInfo fieldInfo, KnnVectorsReader knnVectorsReader, int maxDoc)
+  public void writeField(FieldInfo fieldInfo, FloatVectorValues floatVectorValues, int maxDoc)
       throws IOException {
     long vectorDataOffset = vectorData.alignFilePointer(Float.BYTES);
-    VectorValues vectors = knnVectorsReader.getVectorValues(fieldInfo.name);
 
     IndexOutput tempVectorData =
         segmentWriteState.directory.createTempOutput(
@@ -120,7 +118,7 @@ public final class Lucene91HnswVectorsWriter extends BufferingKnnVectorsWriter {
     boolean success = false;
     try {
       // write the vector data to a temporary file
-      DocsWithFieldSet docsWithField = writeVectorData(tempVectorData, vectors);
+      DocsWithFieldSet docsWithField = writeVectorData(tempVectorData, floatVectorValues);
       CodecUtil.writeFooter(tempVectorData);
       IOUtils.close(tempVectorData);
 
@@ -136,9 +134,13 @@ public final class Lucene91HnswVectorsWriter extends BufferingKnnVectorsWriter {
       // build the graph using the temporary vector data
       // we pass null for ordToDoc mapping, for the graph construction doesn't need to know docIds
       // TODO: separate random access vector values from DocIdSetIterator?
-      Lucene91HnswVectorsReader.OffHeapVectorValues offHeapVectors =
-          new Lucene91HnswVectorsReader.OffHeapVectorValues(
-              vectors.dimension(), docsWithField.cardinality(), null, vectorDataInput);
+      Lucene91HnswVectorsReader.OffHeapFloatVectorValues offHeapVectors =
+          new Lucene91HnswVectorsReader.OffHeapFloatVectorValues(
+              floatVectorValues.dimension(),
+              docsWithField.cardinality(),
+              null,
+              fieldInfo.getVectorSimilarityFunction(),
+              vectorDataInput);
       Lucene91OnHeapHnswGraph graph =
           offHeapVectors.size() == 0
               ? null
@@ -166,17 +168,25 @@ public final class Lucene91HnswVectorsWriter extends BufferingKnnVectorsWriter {
     }
   }
 
+  @Override
+  protected void writeField(FieldInfo fieldInfo, ByteVectorValues byteVectorValues, int maxDoc) {
+    throw new UnsupportedOperationException("byte vectors not supported in this version");
+  }
+
   /**
    * Writes the vector values to the output and returns a set of documents that contains vectors.
    */
-  private static DocsWithFieldSet writeVectorData(IndexOutput output, VectorValues vectors)
+  private static DocsWithFieldSet writeVectorData(IndexOutput output, FloatVectorValues vectors)
       throws IOException {
     DocsWithFieldSet docsWithField = new DocsWithFieldSet();
-    for (int docV = vectors.nextDoc(); docV != NO_MORE_DOCS; docV = vectors.nextDoc()) {
+    ByteBuffer binaryVector =
+        ByteBuffer.allocate(vectors.dimension() * Float.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+    KnnVectorValues.DocIndexIterator iter = vectors.iterator();
+    for (int docV = iter.nextDoc(); docV != DocIdSetIterator.NO_MORE_DOCS; docV = iter.nextDoc()) {
       // write vector
-      BytesRef binaryValue = vectors.binaryValue();
-      assert binaryValue.length == vectors.dimension() * Float.BYTES;
-      output.writeBytes(binaryValue.bytes, binaryValue.offset, binaryValue.length);
+      float[] vectorValue = vectors.vectorValue(iter.index());
+      binaryVector.asFloatBuffer().put(vectorValue);
+      output.writeBytes(binaryVector.array(), binaryVector.limit());
       docsWithField.add(docV);
     }
     return docsWithField;
@@ -220,11 +230,10 @@ public final class Lucene91HnswVectorsWriter extends BufferingKnnVectorsWriter {
     } else {
       meta.writeInt(graph.numLevels());
       for (int level = 0; level < graph.numLevels(); level++) {
-        NodesIterator nodesOnLevel = graph.getNodesOnLevel(level);
-        meta.writeInt(nodesOnLevel.size()); // number of nodes on a level
+        int[] sortedNodes = HnswGraph.NodesIterator.getSortedNodes(graph.getNodesOnLevel(level));
+        meta.writeInt(sortedNodes.length); // number of nodes on a level
         if (level > 0) {
-          while (nodesOnLevel.hasNext()) {
-            int node = nodesOnLevel.nextInt();
+          for (int node : sortedNodes) {
             meta.writeInt(node); // list of nodes on a level
           }
         }
@@ -233,7 +242,7 @@ public final class Lucene91HnswVectorsWriter extends BufferingKnnVectorsWriter {
   }
 
   private Lucene91OnHeapHnswGraph writeGraph(
-      RandomAccessVectorValues vectorValues, VectorSimilarityFunction similarityFunction)
+      FloatVectorValues vectorValues, VectorSimilarityFunction similarityFunction)
       throws IOException {
 
     // build graph
@@ -250,9 +259,8 @@ public final class Lucene91HnswVectorsWriter extends BufferingKnnVectorsWriter {
     // write vectors' neighbours on each level into the vectorIndex file
     int countOnLevel0 = graph.size();
     for (int level = 0; level < graph.numLevels(); level++) {
-      NodesIterator nodesOnLevel = graph.getNodesOnLevel(level);
-      while (nodesOnLevel.hasNext()) {
-        int node = nodesOnLevel.nextInt();
+      int[] sortedNodes = HnswGraph.NodesIterator.getSortedNodes(graph.getNodesOnLevel(level));
+      for (int node : sortedNodes) {
         Lucene91NeighborArray neighbors = graph.getNeighbors(level, node);
         int size = neighbors.size();
         vectorIndex.writeInt(size);

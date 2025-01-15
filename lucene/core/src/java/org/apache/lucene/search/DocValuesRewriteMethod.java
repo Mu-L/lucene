@@ -18,6 +18,7 @@ package org.apache.lucene.search;
 
 import java.io.IOException;
 import org.apache.lucene.index.DocValues;
+import org.apache.lucene.index.DocValuesSkipper;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
@@ -153,7 +154,6 @@ public final class DocValuesRewriteMethod extends MultiTermQuery.RewriteMethod {
             return null; // no values/docs so nothing can match
           }
 
-          final Weight weight = this;
           return new ScorerSupplier() {
             @Override
             public Scorer get(long leadCost) throws IOException {
@@ -164,23 +164,33 @@ public final class DocValuesRewriteMethod extends MultiTermQuery.RewriteMethod {
 
               if (termsEnum.next() == null) {
                 // no matching terms
-                return new ConstantScoreScorer(
-                    weight, score(), scoreMode, DocIdSetIterator.empty());
+                return new ConstantScoreScorer(score(), scoreMode, DocIdSetIterator.empty());
               }
+
+              // Leverage a DV skipper if one was indexed for the field:
+              DocValuesSkipper skipper = context.reader().getDocValuesSkipper(query.field);
 
               // Create a bit set for the "term set" ordinals (these are the terms provided by the
               // query that are actually present in the doc values field). Cannot use FixedBitSet
               // because we require long index (ord):
               final LongBitSet termSet = new LongBitSet(values.getValueCount());
+              long minOrd = termsEnum.ord();
+              assert minOrd >= 0;
+              long maxOrd = -1;
               do {
                 long ord = termsEnum.ord();
-                if (ord >= 0) {
-                  termSet.set(ord);
-                }
+                assert ord >= 0 && ord > maxOrd;
+                maxOrd = ord;
+                termSet.set(ord);
               } while (termsEnum.next() != null);
 
+              if (skipper != null && (minOrd > skipper.maxValue() || maxOrd < skipper.minValue())) {
+                return new ConstantScoreScorer(score(), scoreMode, DocIdSetIterator.empty());
+              }
+
               final SortedDocValues singleton = DocValues.unwrapSingleton(values);
-              final TwoPhaseIterator iterator;
+              TwoPhaseIterator iterator;
+              final long max = maxOrd;
               if (singleton != null) {
                 iterator =
                     new TwoPhaseIterator(singleton) {
@@ -200,7 +210,10 @@ public final class DocValuesRewriteMethod extends MultiTermQuery.RewriteMethod {
                       @Override
                       public boolean matches() throws IOException {
                         for (int i = 0; i < values.docValueCount(); i++) {
-                          if (termSet.get(values.nextOrd())) {
+                          long value = values.nextOrd();
+                          if (value > max) {
+                            return false; // values are sorted, terminate
+                          } else if (termSet.get(value)) {
                             return true;
                           }
                         }
@@ -214,7 +227,10 @@ public final class DocValuesRewriteMethod extends MultiTermQuery.RewriteMethod {
                     };
               }
 
-              return new ConstantScoreScorer(weight, score(), scoreMode, iterator);
+              if (skipper != null) {
+                iterator = new DocValuesRangeIterator(iterator, skipper, minOrd, maxOrd, true);
+              }
+              return new ConstantScoreScorer(score(), scoreMode, iterator);
             }
 
             @Override
@@ -224,15 +240,6 @@ public final class DocValuesRewriteMethod extends MultiTermQuery.RewriteMethod {
               return values.cost();
             }
           };
-        }
-
-        @Override
-        public Scorer scorer(LeafReaderContext context) throws IOException {
-          final ScorerSupplier scorerSupplier = scorerSupplier(context);
-          if (scorerSupplier == null) {
-            return null;
-          }
-          return scorerSupplier.get(Long.MAX_VALUE);
         }
 
         @Override

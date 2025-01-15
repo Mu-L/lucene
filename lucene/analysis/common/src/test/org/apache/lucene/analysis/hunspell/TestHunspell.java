@@ -21,13 +21,17 @@ import static org.apache.lucene.analysis.hunspell.TimeoutPolicy.NO_TIMEOUT;
 import static org.apache.lucene.analysis.hunspell.TimeoutPolicy.RETURN_PARTIAL_RESULT;
 import static org.apache.lucene.analysis.hunspell.TimeoutPolicy.THROW_EXCEPTION;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -71,7 +75,8 @@ public class TestHunspell extends LuceneTestCase {
         };
 
     Hunspell hunspell = new Hunspell(dictionary, RETURN_PARTIAL_RESULT, checkCanceled);
-    assertEquals(expected, hunspell.suggest("apac"));
+    // pass a long timeout so that slower CI servers are more predictable.
+    assertEquals(expected, hunspell.suggest("apac", TimeUnit.DAYS.toMillis(1)));
 
     counter.set(0);
     var e =
@@ -163,7 +168,10 @@ public class TestHunspell extends LuceneTestCase {
   }
 
   private Hunspell loadNoTimeout(String name) throws Exception {
-    Dictionary dictionary = loadDictionary(false, name + ".aff", name + ".dic");
+    return loadNoTimeout(loadDictionary(false, name + ".aff", name + ".dic"));
+  }
+
+  private static Hunspell loadNoTimeout(Dictionary dictionary) {
     return new Hunspell(dictionary, TimeoutPolicy.NO_TIMEOUT, () -> {});
   }
 
@@ -205,7 +213,7 @@ public class TestHunspell extends LuceneTestCase {
     Hunspell h = loadNoTimeout("base");
     String[] createQuery = {"create", "created", "creates", "creating", "creation"};
     checkCompression(h, "toEdit=[create/DGNS], toAdd=[], extra=[]", createQuery);
-    checkCompression(h, "toEdit=[created], toAdd=[creates], extra=[]", "creates", "created");
+    checkCompression(h, "toEdit=[create/DS], toAdd=[], extra=[]", "creates", "created");
     checkCompression(h, "toEdit=[], toAdd=[creation/S], extra=[]", "creation", "creations");
     checkCompression(h, "toEdit=[], toAdd=[abc, def], extra=[]", "abc", "def");
     checkCompression(h, "toEdit=[], toAdd=[form/S], extra=[]", "form", "forms");
@@ -219,6 +227,20 @@ public class TestHunspell extends LuceneTestCase {
     Hunspell h = loadNoTimeout("compress");
     checkCompression(
         h, "toEdit=[], toAdd=[form/GS], extra=[]", "formings", "forming", "form", "forms");
+
+    checkCompression(h, "toEdit=[], toAdd=[f/def], extra=[]", "f", "fd", "fe", "ff");
+
+    WordFormGenerator gen = new WordFormGenerator(h.dictionary);
+    EntrySuggestion fAbc =
+        gen.compress(List.of("f", "fa", "fb", "fc"), Set.of("fyy", "fxx"), () -> {});
+    assertEquals("toEdit=[], toAdd=[f/abc], extra=[]", fAbc.internalsToString());
+  }
+
+  @Test
+  public void testCompressingIsFastOnLargeUnrelatedWordSets() throws Exception {
+    Hunspell h = loadNoTimeout("compress");
+    String[] letters = {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"};
+    checkCompression(h, "toEdit=[], toAdd=[a, b, c, d, e, f, g, h, i, j, k, l], extra=[]", letters);
   }
 
   @Test
@@ -234,5 +256,37 @@ public class TestHunspell extends LuceneTestCase {
 
   private void checkCompression(Hunspell h, String expected, String... words) {
     assertEquals(expected, h.compress(List.of(words)).internalsToString());
+  }
+
+  @Test
+  public void testSuggestionOrderStabilityOnDictionaryEditing() throws IOException, ParseException {
+    String original = "some_word";
+
+    List<String> words = new ArrayList<>();
+    for (char c = 0; c < 65535; c++) {
+      if (Character.isLetter(c)) {
+        words.add(original + c);
+      }
+    }
+
+    String smallDict = "1\n" + String.join("\n", words.subList(0, words.size() / 4));
+    String largerDict = "1\n" + String.join("\n", words);
+    Dictionary small =
+        loadDictionary(
+            false,
+            new ByteArrayInputStream(new byte[0]),
+            new ByteArrayInputStream(smallDict.getBytes(StandardCharsets.UTF_8)));
+    Dictionary larger =
+        loadDictionary(
+            false,
+            new ByteArrayInputStream(new byte[0]),
+            new ByteArrayInputStream(largerDict.getBytes(StandardCharsets.UTF_8)));
+
+    assertFalse(new Hunspell(small).spell(original));
+
+    List<String> smallSug = loadNoTimeout(small).suggest(original);
+    List<String> largerSug = loadNoTimeout(larger).suggest(original);
+    assertEquals(smallSug.toString(), 4, smallSug.size());
+    assertEquals(smallSug, largerSug);
   }
 }

@@ -64,11 +64,11 @@ public class TestLiveFieldValues extends LuceneTestCase {
           protected Integer lookupFromSearcher(IndexSearcher s, String id) throws IOException {
             TermQuery tq = new TermQuery(new Term("id", id));
             TopDocs hits = s.search(tq, 1);
-            assertTrue(hits.totalHits.value <= 1);
-            if (hits.totalHits.value == 0) {
+            assertTrue(hits.totalHits.value() <= 1);
+            if (hits.totalHits.value() == 0) {
               return null;
             } else {
-              Document doc = s.doc(hits.scoreDocs[0].doc);
+              Document doc = s.storedFields().document(hits.scoreDocs[0].doc);
               return (Integer) doc.getField("field").numericValue();
             }
           }

@@ -23,7 +23,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.SplittableRandom;
-import org.apache.lucene.index.RandomAccessVectorValues;
+import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.SparseFixedBitSet;
@@ -74,11 +74,11 @@ public final class Lucene90OnHeapHnswGraph extends HnswGraph {
       float[] query,
       int topK,
       int numSeed,
-      RandomAccessVectorValues vectors,
+      FloatVectorValues vectors,
       VectorSimilarityFunction similarityFunction,
       HnswGraph graphValues,
       Bits acceptOrds,
-      int visitedLimit,
+      long visitedLimit,
       SplittableRandom random)
       throws IOException {
     int size = graphValues.size();
@@ -196,6 +196,11 @@ public final class Lucene90OnHeapHnswGraph extends HnswGraph {
   @Override
   public int entryNode() {
     throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public int maxConn() {
+    return maxConn;
   }
 
   @Override
